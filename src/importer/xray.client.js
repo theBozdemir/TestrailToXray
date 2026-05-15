@@ -138,12 +138,21 @@ async function xrayRequest(method, path, body, retried = false) {
     }
 
     const status = e.response?.status;
+    const body = e.response?.data;
+
     if (status === 401 && !isRegionMismatchError(e)) {
       cachedToken = null;
       throw new Error(
-        `Xray 401 — check API keys and license. ${JSON.stringify(e.response?.data) ?? e.message}`
+        `Xray 401 — check API keys and license. ${JSON.stringify(body) ?? e.message}`
       );
     }
+
+    if (status === 400) {
+      throw new Error(
+        `Xray 400 Bad Request on ${path}: ${JSON.stringify(body) ?? e.message}`
+      );
+    }
+
     throw e;
   }
 }

@@ -150,6 +150,23 @@ async function runAudit(cases) {
   return audit;
 }
 
+async function importBatch(imports, metaList, idMap) {
+  const job = await importTestsBulk(imports);
+  const trIds = metaList.map((m) => m.testRailId);
+  const batchMap = extractKeysFromJob(job, trIds);
+
+  for (const m of metaList) {
+    const key = batchMap[m.testRailId];
+    if (key) {
+      idMap[m.testRailId] = key;
+      logger.recordMigrated(m.testRailId, key);
+      logger.success(`TR-${m.testRailId} → ${key}`);
+    } else {
+      logger.recordError(`import(${m.testRailId})`, "No issue key returned from Xray job");
+    }
+  }
+}
+
 async function migrateCases(cases) {
   const idMap = loadExistingIdMap();
   const batchSize = 25;
@@ -188,24 +205,16 @@ async function migrateCases(cases) {
     }
 
     try {
-      const job = await importTestsBulk(imports);
-      const trIds = metaList.map((m) => m.testRailId);
-      const batchMap = extractKeysFromJob(job, trIds);
-
-      for (const m of metaList) {
-        const key = batchMap[m.testRailId];
-        if (key) {
-          idMap[m.testRailId] = key;
-          logger.recordMigrated(m.testRailId, key);
-          logger.success(`TR-${m.testRailId} → ${key}`);
-        } else {
-          logger.recordError(`import(${m.testRailId})`, "No issue key returned from Xray job");
-        }
-      }
+      await importBatch(imports, metaList, idMap);
     } catch (e) {
       if (config.errors.strategy === "stop") throw e;
-      for (const m of metaList) {
-        logger.recordError(`batch-import`, `TR-${m.testRailId}: ${e.message}`);
+      logger.warn(`Batch import failed — retrying one-by-one: ${e.message}`);
+      for (let j = 0; j < imports.length; j++) {
+        try {
+          await importBatch([imports[j]], [metaList[j]], idMap);
+        } catch (oneErr) {
+          logger.recordError(`import(${metaList[j].testRailId})`, oneErr.message);
+        }
       }
     }
   }
