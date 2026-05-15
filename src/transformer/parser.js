@@ -1,3 +1,5 @@
+import { replaceTestRailAttachmentRefs } from "../utils/jira-content.js";
+
 /**
  * @typedef {{ action: string, expected: string }} Step
  * @typedef {{ steps: Step[], confidence: number, strategy: string }} ParseResult
@@ -147,7 +149,7 @@ function pairWithExpectedLines(steps, allLines, stepPattern) {
 /**
  * TestRail often stores actions in custom_steps and expected results in custom_expected.
  */
-export function extractTestRailSteps(testCase) {
+export function extractTestRailSteps(testCase, attachmentIdToFilename = new Map()) {
   let separated = testCase.custom_steps_separated;
 
   if (typeof separated === "string" && separated.trim()) {
@@ -160,8 +162,11 @@ export function extractTestRailSteps(testCase) {
 
   if (Array.isArray(separated) && separated.length > 0) {
     return separated.map((step) => ({
-      action: step.content ?? step.step ?? "",
-      expected: step.expected ?? step.result ?? "",
+      action: replaceTestRailAttachmentRefs(step.content ?? step.step ?? "", attachmentIdToFilename),
+      expected: replaceTestRailAttachmentRefs(
+        step.expected ?? step.result ?? "",
+        attachmentIdToFilename
+      ),
     }));
   }
 
@@ -169,7 +174,7 @@ export function extractTestRailSteps(testCase) {
   if (!actionsText) return [];
 
   const steps = parseActionStepsFromText(actionsText);
-  const expectedText = normalizeExpectedField(testCase.custom_expected);
+  const expectedText = normalizeExpectedField(testCase.custom_expected, attachmentIdToFilename);
 
   if (expectedText && steps.length > 0) {
     if (steps.length === 1) {
@@ -179,7 +184,39 @@ export function extractTestRailSteps(testCase) {
     }
   }
 
-  return steps;
+  return steps.map((s) => ({
+    action: replaceTestRailAttachmentRefs(s.action, attachmentIdToFilename),
+    expected: replaceTestRailAttachmentRefs(s.expected, attachmentIdToFilename),
+  }));
+}
+
+/** Raw expected text per step (before attachment substitution), for post-processing. */
+export function getRawStepExpecteds(testCase) {
+  let separated = testCase.custom_steps_separated;
+
+  if (typeof separated === "string" && separated.trim()) {
+    try {
+      separated = JSON.parse(separated);
+    } catch {
+      separated = [];
+    }
+  }
+
+  if (Array.isArray(separated) && separated.length > 0) {
+    return separated.map((step) => String(step.expected ?? step.result ?? ""));
+  }
+
+  const actionsText = testCase.custom_steps?.trim() ?? "";
+  const expectedText = testCase.custom_expected ?? "";
+  if (!actionsText) return expectedText ? [expectedText] : [];
+
+  const actionSteps = parseActionStepsFromText(actionsText);
+  const raw = actionSteps.map(() => "");
+  if (expectedText && raw.length > 0) {
+    if (raw.length === 1) raw[0] = expectedText;
+    else raw[raw.length - 1] = expectedText;
+  }
+  return raw;
 }
 
 export function hasStructuredSteps(testCase) {
@@ -232,20 +269,9 @@ function parseActionStepsFromText(text) {
   return [{ action: clean, expected: "" }];
 }
 
-function normalizeExpectedField(text) {
+function normalizeExpectedField(text, attachmentIdToFilename = new Map()) {
   if (!text || !String(text).trim()) return "";
-
-  const raw = String(text).trim();
-
-  if (/attachments\/get\/[a-f0-9-]+/i.test(raw)) {
-    const textOnly = stripHtml(raw).replace(/!\[[^\]]*\]\([^)]*\)/g, "").trim();
-    if (!textOnly || textOnly.length < 15) {
-      return "Expected result: screenshot/image from TestRail (see attachments on this issue).";
-    }
-    return textOnly;
-  }
-
-  return stripHtml(raw);
+  return replaceTestRailAttachmentRefs(text, attachmentIdToFilename);
 }
 
 function stripHtml(text) {

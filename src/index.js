@@ -15,10 +15,33 @@ import {
   getAttachmentsForCase,
   downloadAttachment,
 } from "./extractor/testrail.client.js";
-import { transformCase, transformResult, buildFolderPath } from "./transformer/transformer.js";
+import {
+  transformCase,
+  transformResult,
+  buildFolderPath,
+  buildDescription,
+} from "./transformer/transformer.js";
 import { hasStructuredSteps } from "./transformer/parser.js";
 import { importTestsBulk, extractKeysFromJob, importExecution } from "./importer/xray.client.js";
-import { findExistingTestByLabel, uploadAttachment } from "./importer/jira.client.js";
+import {
+  findExistingTestByLabel,
+  getIssueAttachments,
+  getIssueAttachmentNames,
+  uploadAttachment,
+  updateIssueDescription,
+  linkIssues,
+  resolveRefKeys,
+} from "./importer/jira.client.js";
+import {
+  buildAttachmentIdMap,
+  buildExpectedResultPlainText,
+  stepExpectedResultLabel,
+  resolveStepExpectedAttachments,
+  resolvePreconditionAttachments,
+  testrailUploadFilename,
+} from "./utils/jira-content.js";
+import { getXrayTestSteps, updateTestStepWithAttachments } from "./importer/xray-steps.client.js";
+import { extractTestRailSteps, getRawStepExpecteds } from "./transformer/parser.js";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -229,7 +252,13 @@ async function migrateCases(cases) {
         continue;
       }
 
-      const { importPayload, meta } = transformCase(trCase, folderPath, dryRun);
+      const attachments = await getAttachmentsForCase(trCase.id);
+      const attachmentMap = buildAttachmentIdMap(attachments);
+
+      const { importPayload, meta } = transformCase(trCase, folderPath, dryRun, {
+        attachmentMap,
+        idMap,
+      });
       imports.push(importPayload);
       metaList.push(meta);
     }
@@ -274,21 +303,134 @@ async function migrateAttachments(cases, idMap) {
     cases.map(({ case: trCase }) =>
       limit(async () => {
         const issueKey = idMap[trCase.id];
-        if (!issueKey) return;
+        if (!issueKey || String(issueKey).startsWith("DRY-RUN")) return;
 
         const attachments = await getAttachmentsForCase(trCase.id);
-        for (const att of attachments) {
+        const attachmentMap = buildAttachmentIdMap(attachments);
+
+        const existingNames = new Set(await getIssueAttachmentNames(issueKey));
+
+        const precondFiles = resolvePreconditionAttachments(
+          trCase.custom_preconds,
+          attachments,
+          attachmentMap
+        );
+        const filesToUpload = new Map();
+        for (const att of [...attachments, ...precondFiles]) {
+          filesToUpload.set(att.id, att);
+        }
+
+        for (const att of filesToUpload.values()) {
           try {
+            const uploadName = testrailUploadFilename(att);
+            if (existingNames.has(uploadName)) {
+              logger.info(`Attachment "${uploadName}" already on ${issueKey} — skip upload`);
+              continue;
+            }
             const { buffer, contentType } = await downloadAttachment(att.id);
-            await uploadAttachment(issueKey, att.name, buffer, contentType);
-            logger.info(`Attachment "${att.name}" → ${issueKey}`);
+            await uploadAttachment(issueKey, uploadName, buffer, contentType);
+            existingNames.add(uploadName);
+            logger.info(`Attachment "${uploadName}" → ${issueKey}`);
           } catch (e) {
             logger.recordWarning(`attachment(${trCase.id}/${att.id})`, e.message);
           }
         }
+
+        await postProcessIssue(trCase, issueKey, attachmentMap, idMap, attachments);
       })
     )
   );
+}
+
+async function postProcessIssue(trCase, issueKey, attachmentMap, idMap, testrailAttachments = []) {
+  const strategy = hasStructuredSteps(trCase) ? "structured" : "heuristic";
+  const description = buildDescription(trCase, strategy, attachmentMap, idMap);
+
+  let jiraAttachments = [];
+  try {
+    jiraAttachments = await getIssueAttachments(issueKey);
+    await updateIssueDescription(issueKey, description, jiraAttachments);
+    logger.info(`Updated description on ${issueKey}`);
+  } catch (e) {
+    const detail = e.response?.data?.errors
+      ? JSON.stringify(e.response.data.errors)
+      : e.message;
+    logger.recordWarning(`description(${issueKey})`, detail);
+  }
+
+  await postProcessTestSteps(trCase, issueKey, attachmentMap, testrailAttachments);
+
+  const refKeys = resolveRefKeys(trCase.refs);
+  if (refKeys.length > 0) {
+    await linkIssues(issueKey, refKeys);
+  }
+}
+
+async function postProcessTestSteps(trCase, issueKey, attachmentMap, testrailAttachments) {
+  try {
+    const trSteps = extractTestRailSteps(trCase, attachmentMap);
+    const rawByStep = getRawStepExpecteds(trCase);
+    const xraySteps = await getXrayTestSteps(issueKey);
+    if (xraySteps.length === 0) return;
+
+    for (let i = 0; i < xraySteps.length; i++) {
+      const xStep = xraySteps[i];
+      const trStep = trSteps[i];
+      const rawExpected = rawByStep[i] ?? rawByStep[rawByStep.length - 1] ?? "";
+      const expected = trStep?.expected ?? "";
+
+      const needsImage =
+        /attachments\/get\//i.test(rawExpected) ||
+        /!\S[^|!\n]*(?:\|[^!]*)?!/.test(expected) ||
+        /\(image — see Attachments/i.test(xStep.result ?? "") ||
+        /<img\s/i.test(xStep.result ?? "");
+
+      const plainText = buildExpectedResultPlainText(expected, rawExpected);
+      const filesToAttach = resolveStepExpectedAttachments(
+        rawExpected,
+        testrailAttachments,
+        attachmentMap
+      );
+
+      const existingNames = new Set((xStep.attachments ?? []).map((a) => a.filename));
+      const willHaveImage =
+        filesToAttach.length > 0 || existingNames.size > 0 || needsImage;
+
+      const resultText = stepExpectedResultLabel(plainText, willHaveImage);
+
+      if (!resultText && filesToAttach.length === 0 && !needsImage) continue;
+
+      const attachmentsToAdd = [];
+
+      for (const att of filesToAttach) {
+        const filename = testrailUploadFilename(att);
+        if (existingNames.has(filename)) continue;
+
+        const { buffer, contentType } = await downloadAttachment(att.id);
+        attachmentsToAdd.push({
+          filename,
+          mimeType: contentType || "application/octet-stream",
+          data: buffer.toString("base64"),
+        });
+      }
+
+      const needsUpdate =
+        attachmentsToAdd.length > 0 ||
+        (xStep.result ?? "").trim() !== resultText.trim() ||
+        /<img\s/i.test(xStep.result ?? "") ||
+        /^(|\s+)$/.test(xStep.result ?? "");
+
+      if (!needsUpdate) continue;
+
+      await updateTestStepWithAttachments(xStep.id, resultText, attachmentsToAdd);
+      logger.info(
+        `Updated step ${i + 1} on ${issueKey}` +
+          (attachmentsToAdd.length ? ` (+${attachmentsToAdd.length} image(s))` : "")
+      );
+    }
+  } catch (e) {
+    logger.recordWarning(`steps(${issueKey})`, e.message);
+  }
 }
 
 async function migrateResults(idMap) {

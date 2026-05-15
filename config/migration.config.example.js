@@ -29,6 +29,14 @@ export const config = {
     // Set true only if priority names in priorityMap match your Jira scheme
     includePriority: false,
 
+    // Jira issue link type for TestRail refs (must exist in your Jira)
+    issueLinkType: "Relates",
+
+    // Only matching refs become Linked work items (PROJECT-123, e.g. FB-1, WSC-99, SAC-100)
+    refLinkPattern: "^[A-Z][A-Z0-9]+-\\d+$",
+    // Optional: also link refs to your migration project (default: TSTSWEB keys are skipped)
+    refLinkAllowProjects: [],
+
     // Tests per Xray bulk job (1 = most reliable for pilot)
     importBatchSize: 1,
     jobPollAttempts: 120,

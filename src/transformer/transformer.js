@@ -6,8 +6,34 @@ import {
   getUnstructuredText,
   extractTestRailSteps,
 } from "./parser.js";
+import {
+  formatPreconditionsSection,
+  formatReferences,
+  replaceTestRailAttachmentRefs,
+} from "../utils/jira-content.js";
 
-export function transformCase(trCase, folderPath, dryRun = false) {
+/** Avoid wiki image syntax in Xray steps (causes broken loaders); post-process sets HTML images. */
+function formatStepResultForImport(expected, attachmentMap) {
+  const processed = replaceTestRailAttachmentRefs(expected, attachmentMap);
+  if (!processed) return "";
+
+  const imageOnly =
+    /^!\S[^|!\n]*(?:\|[^!]*)?!$/i.test(processed.trim()) ||
+    /^\(image — see Attachments/i.test(processed.trim()) ||
+    (/attachments\/get\//i.test(expected) && processed.replace(/!\S+!\s*/g, "").trim().length < 20);
+
+  if (imageOnly) {
+    return "";
+  }
+
+  return processed
+    .replace(/!\S[^|!\n]*(?:\|[^!]*)?!/g, "")
+    .replace(/\(image — see Attachments on this issue\)/gi, "")
+    .trim();
+}
+
+export function transformCase(trCase, folderPath, dryRun = false, options = {}) {
+  const { attachmentMap = new Map(), idMap = {} } = options;
   const { priorityMap, typeMap, customFieldMap, parser: parserCfg } = config;
 
   let steps = [];
@@ -17,8 +43,7 @@ export function transformCase(trCase, folderPath, dryRun = false) {
   let strategy = "structured";
 
   if (hasStructuredSteps(trCase)) {
-    steps = extractTestRailSteps(trCase);
-    if (steps.length === 0) steps = extractStructuredSteps(trCase);
+    steps = extractTestRailSteps(trCase, attachmentMap);
   } else if (parserCfg.heuristicParse) {
     const text = getUnstructuredText(trCase, parserCfg.unstructuredTextFields);
     const parseResult = parseDescription(text);
@@ -39,7 +64,7 @@ export function transformCase(trCase, folderPath, dryRun = false) {
   if (needsReview) labels.push("needs-manual-review");
   if (strategy !== "structured") labels.push(`parsed-${strategy}`);
 
-  const descriptionText = buildDescription(trCase, strategy);
+  const descriptionText = buildDescription(trCase, strategy, attachmentMap, idMap);
   const fields = {
     project: { key: config.xray.jiraProjectKey },
     summary: String(trCase.title ?? "Untitled").slice(0, 255),
@@ -47,10 +72,8 @@ export function transformCase(trCase, folderPath, dryRun = false) {
     labels: labels.map((l) => l.slice(0, 255)),
   };
 
-  // Xray bulk import expects plain text description (not Jira ADF)
   if (descriptionText) fields.description = descriptionText;
 
-  // Omit priority by default — wrong names cause Jira 400 (enable after mapping)
   if (config.xray.includePriority === true) {
     const priorityName = priorityMap[trCase.priority_id];
     if (priorityName) fields.priority = { name: priorityName };
@@ -64,9 +87,10 @@ export function transformCase(trCase, folderPath, dryRun = false) {
 
   let xraySteps = steps
     .map((s) => ({
-      action: stripHtml(s.action).slice(0, 10000) || " ",
-      data: stripHtml(s.data ?? "").slice(0, 10000),
-      result: stripHtml(s.expected ?? "").slice(0, 10000),
+      action:
+        replaceTestRailAttachmentRefs(s.action, attachmentMap).slice(0, 10000) || " ",
+      data: replaceTestRailAttachmentRefs(s.data ?? "", attachmentMap).slice(0, 10000),
+      result: formatStepResultForImport(s.expected ?? "", attachmentMap).slice(0, 10000),
     }))
     .filter((s) => s.action.trim());
 
@@ -80,7 +104,6 @@ export function transformCase(trCase, folderPath, dryRun = false) {
     ];
   }
 
-  // Xray bulk import expects root-level "fields" + "testtype" (not jira.fields / testType)
   const importPayload = {
     testtype: typeMap[trCase.type_id] ?? "Manual",
     steps: xraySteps,
@@ -100,6 +123,27 @@ export function transformCase(trCase, folderPath, dryRun = false) {
       stepCount: xraySteps.length,
     },
   };
+}
+
+export function buildDescription(trCase, strategy, attachmentMap = new Map(), idMap = {}) {
+  const parts = [];
+
+  const pre = formatPreconditionsSection(trCase.custom_preconds, attachmentMap);
+  if (pre) parts.push(pre);
+
+  if (strategy !== "structured") {
+    const original = replaceTestRailAttachmentRefs(
+      getUnstructuredText(trCase, config.parser.unstructuredTextFields),
+      attachmentMap
+    );
+    if (original) parts.push(`*Original TestRail text*\n${original}`);
+  }
+
+  const refs = formatReferences(trCase.refs, idMap);
+  if (refs) parts.push(refs);
+
+  parts.push(`Migrated from TestRail — Case ID: ${trCase.id}`);
+  return parts.join("\n\n");
 }
 
 export function transformResult(trResult, xrayTestKey) {
@@ -137,48 +181,6 @@ export function buildFolderPath(suiteName, sectionPath = []) {
   return "/" + parts.join("/");
 }
 
-function buildDescription(trCase, strategy) {
-  const parts = [];
-
-  if (trCase.custom_preconds) {
-    parts.push(`Preconditions:\n${stripHtml(trCase.custom_preconds)}`);
-  }
-
-  if (trCase.custom_expected && strategy === "structured") {
-    const exp = stripHtml(trCase.custom_expected);
-    if (exp && !stepsAlreadyHaveExpected(trCase)) {
-      parts.push(`Expected results (TestRail):\n${exp}`);
-    }
-  }
-
-  if (strategy !== "structured") {
-    const original = getUnstructuredText(trCase, config.parser.unstructuredTextFields);
-    if (original) parts.push(`Original TestRail text:\n${original}`);
-  }
-
-  if (trCase.refs) parts.push(`References: ${trCase.refs}`);
-
-  parts.push(`Migrated from TestRail — Case ID: ${trCase.id}`);
-  return parts.join("\n\n");
-}
-
-function stripHtml(text) {
-  return String(text)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .trim();
-}
-
 function sanitizeFolderName(name) {
   return String(name).replace(/[/\\|<>:?"*]/g, "_").trim();
-}
-
-function stepsAlreadyHaveExpected(trCase) {
-  const steps = extractTestRailSteps(trCase);
-  return steps.some((s) => s.expected?.trim());
 }
