@@ -15,16 +15,25 @@ const client = axios.create({
 export async function findExistingTestByLabel(testRailCaseId) {
   const label = `testrail-case-${testRailCaseId}`;
   const jql = `project = ${config.xray.jiraProjectKey} AND labels = "${label}"`;
+
   try {
-    const res = await client.post("/search", {
-      jql,
-      maxResults: 1,
-      fields: ["key"],
+    // POST /search removed on Jira Cloud (410) — use /search/jql
+    const res = await client.get("/search/jql", {
+      params: {
+        jql,
+        maxResults: 1,
+        fields: "key",
+      },
     });
-    const issues = res.data.issues ?? [];
+
+    const issues = res.data.issues ?? res.data.values ?? [];
     return issues[0]?.key ?? null;
   } catch (e) {
-    logger.recordWarning(`jira.search(${testRailCaseId})`, e.message);
+    const status = e.response?.status;
+    logger.recordWarning(
+      `jira.search(${testRailCaseId})`,
+      status ? `HTTP ${status}: ${e.response?.data?.errorMessages?.join?.(" ") ?? e.message}` : e.message
+    );
     return null;
   }
 }

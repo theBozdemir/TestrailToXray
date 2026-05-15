@@ -8,6 +8,7 @@
     "dry-run": "node src/index.js --dry-run",
     "audit": "node src/index.js --audit-only",
     "test-testrail": "node src/test-testrail.js",
+    "test-xray": "node src/test-xray.js",
     "results-only": "node src/index.js --results-only"
   },
   "dependencies": {

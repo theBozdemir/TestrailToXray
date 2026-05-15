@@ -289,6 +289,7 @@ function validateConfig() {
   if (config.testRail.username.includes("your@")) missing.push("testRail.username");
   if (config.xray.clientId.includes("YOUR_")) missing.push("xray.clientId");
   if (config.xray.jiraApiToken.includes("YOUR_")) missing.push("xray.jiraApiToken");
+  if (config.xray.clientSecret?.includes("YOUR_")) missing.push("xray.clientSecret");
   if (missing.length) {
     throw new Error(`Edit config/migration.config.js — missing: ${missing.join(", ")}`);
   }
@@ -297,6 +298,13 @@ function validateConfig() {
 async function main() {
   logger.info("TestRail → Xray migration starting…");
   validateConfig();
+
+  if (!args.includes("--skip-xray-check") && !auditOnly && !dryRun) {
+    const { authenticateXray } = await import("./importer/xray.client.js");
+    logger.info("Verifying Xray authentication…");
+    await authenticateXray();
+    logger.success("Xray authentication OK");
+  }
 
   const idMap = loadExistingIdMap();
 
