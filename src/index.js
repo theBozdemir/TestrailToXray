@@ -300,10 +300,10 @@ async function main() {
   validateConfig();
 
   if (!args.includes("--skip-xray-check") && !auditOnly && !dryRun) {
-    const { authenticateXray } = await import("./importer/xray.client.js");
-    logger.info("Verifying Xray authentication…");
-    await authenticateXray();
-    logger.success("Xray authentication OK");
+    const { resolveXrayRegion } = await import("./importer/xray.client.js");
+    logger.info("Resolving Xray API region…");
+    await resolveXrayRegion();
+    logger.success("Xray region + authentication OK");
   }
 
   const idMap = loadExistingIdMap();

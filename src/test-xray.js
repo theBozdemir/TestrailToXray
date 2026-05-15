@@ -4,7 +4,7 @@
  */
 import axios from "axios";
 import { config } from "../config/migration.config.js";
-import { authenticateXray } from "./importer/xray.client.js";
+import { resolveXrayRegion } from "./importer/xray.client.js";
 
 const { jiraBaseUrl, jiraEmail, jiraApiToken, jiraProjectKey, clientId, clientSecret } =
   config.xray;
@@ -13,9 +13,9 @@ console.log("Testing Xray + Jira connection…\n");
 
 // 1) Xray authenticate
 try {
-  const token = await authenticateXray();
-  console.log("✓ Xray authenticate OK");
-  console.log(`  Token length: ${token.length} chars`);
+  const base = await resolveXrayRegion();
+  console.log("✓ Xray region + authenticate OK");
+  console.log(`  API base: ${base}`);
 } catch (e) {
   console.error("✗", e.message);
   process.exit(1);

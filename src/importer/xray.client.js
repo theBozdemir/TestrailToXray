@@ -1,10 +1,23 @@
 import axios from "axios";
 import { config } from "../../config/migration.config.js";
+import { logger } from "../utils/logger.js";
 
-const XRAY_BASE = "https://xray.cloud.getxray.app/api/v2";
+/** Xray Cloud regional endpoints (Data Residency). */
+export const XRAY_REGION_BASES = [
+  "https://xray.cloud.getxray.app/api/v2",
+  "https://eu.xray.cloud.getxray.app/api/v2",
+  "https://us.xray.cloud.getxray.app/api/v2",
+  "https://au.xray.cloud.getxray.app/api/v2",
+];
 
+let xrayBase = config.xray.apiBaseUrl ?? XRAY_REGION_BASES[0];
 let cachedToken = null;
 let tokenExpiresAt = 0;
+
+function isRegionMismatchError(err) {
+  const text = JSON.stringify(err?.response?.data ?? err?.message ?? "").toLowerCase();
+  return text.includes("another region");
+}
 
 function normalizeToken(data) {
   let token = data;
@@ -19,23 +32,77 @@ function normalizeToken(data) {
   return token;
 }
 
+async function authenticateAtBase(base) {
+  const res = await axios.post(
+    `${base}/authenticate`,
+    {
+      client_id: config.xray.clientId,
+      client_secret: config.xray.clientSecret,
+    },
+    { headers: { "Content-Type": "application/json" }, timeout: 30_000 }
+  );
+  return normalizeToken(res.data);
+}
+
+/** Find the regional Xray API that matches your Jira data residency. */
+export async function resolveXrayRegion() {
+  if (config.xray.apiBaseUrl) {
+    xrayBase = config.xray.apiBaseUrl;
+    cachedToken = null;
+    return xrayBase;
+  }
+
+  const basesToTry = XRAY_REGION_BASES.filter((b) => b !== xrayBase);
+  const allBases = [xrayBase, ...basesToTry];
+
+  for (const base of allBases) {
+    try {
+      const token = await authenticateAtBase(base);
+      const probe = await axios.post(
+        `${base}/import/test/bulk`,
+        { tests: [] },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 30_000,
+          validateStatus: () => true,
+        }
+      );
+
+      if (probe.status === 401 && isRegionMismatchError({ response: probe })) {
+        continue;
+      }
+
+      xrayBase = base;
+      cachedToken = token;
+      tokenExpiresAt = Date.now() + 50 * 60 * 1000;
+      logger.success(`Xray region resolved: ${base}`);
+      logger.info(`Tip: add to config → apiBaseUrl: "${base}"`);
+      return base;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(
+    "Could not determine Xray region. Set xray.apiBaseUrl in config, e.g. " +
+      '"https://eu.xray.cloud.getxray.app/api/v2"'
+  );
+}
+
 export async function authenticateXray() {
   try {
-    const res = await axios.post(
-      `${XRAY_BASE}/authenticate`,
-      {
-        client_id: config.xray.clientId,
-        client_secret: config.xray.clientSecret,
-      },
-      { headers: { "Content-Type": "application/json" }, timeout: 30_000 }
-    );
-    return normalizeToken(res.data);
+    const token = await authenticateAtBase(xrayBase);
+    cachedToken = token;
+    tokenExpiresAt = Date.now() + 50 * 60 * 1000;
+    return token;
   } catch (e) {
     const status = e.response?.status;
     const body = e.response?.data;
     const hint =
-      "Check xray.clientId and xray.clientSecret in config/migration.config.js. " +
-      "Create keys in Jira → Apps → Xray → Settings → API Keys (same site as jiraBaseUrl).";
+      "Check xray.clientId and xray.clientSecret. Keys must be from the same Jira site as jiraBaseUrl.";
     throw new Error(
       `Xray authenticate failed${status ? ` (HTTP ${status})` : ""}: ${JSON.stringify(body) ?? e.message}. ${hint}`
     );
@@ -44,18 +111,16 @@ export async function authenticateXray() {
 
 async function getToken() {
   if (cachedToken && Date.now() < tokenExpiresAt) return cachedToken;
-  cachedToken = await authenticateXray();
-  tokenExpiresAt = Date.now() + 50 * 60 * 1000;
-  return cachedToken;
+  return authenticateXray();
 }
 
-async function xrayRequest(method, path, body) {
+async function xrayRequest(method, path, body, retried = false) {
   const token = await getToken();
 
   try {
     const res = await axios({
       method,
-      url: `${XRAY_BASE}${path}`,
+      url: `${xrayBase}${path}`,
       data: body,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -65,13 +130,19 @@ async function xrayRequest(method, path, body) {
     });
     return res.data;
   } catch (e) {
-    const status = e.response?.status;
-    if (status === 401) {
+    if (!retried && isRegionMismatchError(e) && !config.xray.apiBaseUrl) {
+      logger.warn("Xray data is in another region — detecting correct endpoint…");
       cachedToken = null;
-      const hint =
-        "Xray 401 — regenerate API keys in Xray settings, confirm Xray license is active, " +
-        "and ensure keys belong to connexall.atlassian.net (not another Jira site).";
-      throw new Error(`${hint} URL: ${path} — ${JSON.stringify(e.response?.data) ?? e.message}`);
+      await resolveXrayRegion();
+      return xrayRequest(method, path, body, true);
+    }
+
+    const status = e.response?.status;
+    if (status === 401 && !isRegionMismatchError(e)) {
+      cachedToken = null;
+      throw new Error(
+        `Xray 401 — check API keys and license. ${JSON.stringify(e.response?.data) ?? e.message}`
+      );
     }
     throw e;
   }

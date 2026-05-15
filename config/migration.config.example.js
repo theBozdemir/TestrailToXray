@@ -22,6 +22,13 @@ export const config = {
     jiraEmail: "your@email.com",
     jiraApiToken: "YOUR_JIRA_API_TOKEN",
     testIssueType: "Test",
+
+    // If you get "Xray data is in another region", set your regional API base:
+    // Global: https://xray.cloud.getxray.app/api/v2
+    // EU:     https://eu.xray.cloud.getxray.app/api/v2
+    // US:     https://us.xray.cloud.getxray.app/api/v2
+    // AU:     https://au.xray.cloud.getxray.app/api/v2
+    // apiBaseUrl: "https://eu.xray.cloud.getxray.app/api/v2",
   },
 
   scope: {
