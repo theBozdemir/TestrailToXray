@@ -8,6 +8,7 @@ import {
   getSuites,
   getSections,
   getCases,
+  getCasesForProject,
   getCase,
   getRuns,
   getResults,
@@ -78,6 +79,21 @@ async function collectCases() {
   }
 
   const allCases = [];
+
+  // Single-suite or suite-less layouts: migrate all project cases under one folder
+  if (suites.length === 0) {
+    let cases = await getCasesForProject(projectId);
+    if (cliCaseIds.length) {
+      cases = cases.filter((c) => cliCaseIds.includes(c.id));
+    } else {
+      cases = cases.filter((c) => shouldMigrateCase(c.id));
+    }
+    const suite = { name: "Test Cases" };
+    for (const c of cases) {
+      allCases.push({ case: c, suite, folderPath: "/Test Cases" });
+    }
+    return allCases;
+  }
 
   for (const suite of suites) {
     const sections = await getSections(projectId, suite.id);
@@ -270,6 +286,7 @@ function validateConfig() {
   const missing = [];
   if (config.testRail.baseUrl.includes("YOUR_COMPANY")) missing.push("testRail.baseUrl");
   if (config.testRail.apiKey.includes("YOUR_")) missing.push("testRail.apiKey");
+  if (config.testRail.username.includes("your@")) missing.push("testRail.username");
   if (config.xray.clientId.includes("YOUR_")) missing.push("xray.clientId");
   if (config.xray.jiraApiToken.includes("YOUR_")) missing.push("xray.jiraApiToken");
   if (missing.length) {

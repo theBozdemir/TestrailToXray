@@ -13,6 +13,15 @@ const client = axios.create({
 
 client.interceptors.response.use(null, async (err) => {
   const status = err.response?.status;
+
+  if (status === 401) {
+    const hint =
+      "TestRail 401 Unauthorized — check baseUrl, username (email), and apiKey in config/migration.config.js. " +
+      "Use the API key from TestRail → My Settings (not your login password).";
+    err.message = `${hint} (${err.config?.url ?? "unknown URL"})`;
+    return Promise.reject(err);
+  }
+
   const retries = err.config._retries ?? 0;
 
   if ((status === 429 || status >= 500) && retries < 4) {
@@ -34,13 +43,19 @@ async function get(endpoint) {
   return res.data;
 }
 
+function extractList(data, arrayKey) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data[arrayKey])) return data[arrayKey];
+  return [];
+}
+
 async function getPaginated(endpoint, arrayKey, limit = 250) {
   const results = [];
   let offset = 0;
 
   while (true) {
     const data = await get(`${endpoint}&limit=${limit}&offset=${offset}`);
-    const page = Array.isArray(data) ? data : (data[arrayKey] ?? []);
+    const page = extractList(data, arrayKey);
     results.push(...page);
     if (page.length < limit) break;
     offset += limit;
@@ -52,7 +67,12 @@ async function getPaginated(endpoint, arrayKey, limit = 250) {
 
 export async function getSuites(projectId) {
   logger.info(`Fetching suites for project ${projectId}…`);
-  return get(`/get_suites/${projectId}`);
+  // TestRail 9.3.1+ returns { offset, limit, suites: [...] } instead of a bare array
+  const suites = await getPaginated(`/get_suites/${projectId}`, "suites");
+  if (suites.length === 0) {
+    logger.warn(`No suites returned for project ${projectId} — trying cases without suite filter`);
+  }
+  return suites;
 }
 
 export async function getSections(projectId, suiteId) {
@@ -63,6 +83,12 @@ export async function getSections(projectId, suiteId) {
 export async function getCases(projectId, suiteId) {
   logger.info(`Fetching test cases for suite ${suiteId}…`);
   return getPaginated(`/get_cases/${projectId}&suite_id=${suiteId}`, "cases");
+}
+
+/** Fetch all cases in a project when no suite exists (single-suite / edge layouts). */
+export async function getCasesForProject(projectId) {
+  logger.info(`Fetching all test cases for project ${projectId}…`);
+  return getPaginated(`/get_cases/${projectId}`, "cases");
 }
 
 export async function getRuns(projectId) {
