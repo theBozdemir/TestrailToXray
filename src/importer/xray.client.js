@@ -38,6 +38,9 @@ function formatJobFailure(status) {
       .map((e) => {
         const n = e.elementNumber ?? e.index ?? "?";
         const msgs = e.errors ?? e.messages ?? [e];
+        if (msgs && typeof msgs === "object" && !Array.isArray(msgs)) {
+          return `item ${n}: ${Object.entries(msgs).map(([k, v]) => `${k}: ${v}`).join("; ")}`;
+        }
         const detail = Array.isArray(msgs)
           ? msgs.map((m) => m.xray ?? m.message ?? JSON.stringify(m)).join("; ")
           : String(msgs);

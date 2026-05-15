@@ -1,6 +1,5 @@
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
-import { plainTextToAdf } from "../utils/jira-adf.js";
 import {
   hasStructuredSteps,
   parseDescription,
@@ -46,8 +45,8 @@ export function transformCase(trCase, folderPath, dryRun = false) {
     labels: labels.map((l) => l.slice(0, 255)),
   };
 
-  const descriptionAdf = plainTextToAdf(descriptionText);
-  if (descriptionAdf) fields.description = descriptionAdf;
+  // Xray bulk import expects plain text description (not Jira ADF)
+  if (descriptionText) fields.description = descriptionText;
 
   // Omit priority by default — wrong names cause Jira 400 (enable after mapping)
   if (config.xray.includePriority === true) {
