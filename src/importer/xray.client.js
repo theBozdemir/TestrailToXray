@@ -1,6 +1,7 @@
 import axios from "axios";
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
+import { logger } from "../utils/logger.js";
 
 /** Xray Cloud regional endpoints (Data Residency). */
 export const XRAY_REGION_BASES = [
@@ -162,9 +163,10 @@ function sleep(ms) {
 }
 
 export async function importTestsBulk(tests) {
-  // Xray expects a JSON array at the root, not { tests: [...] }
+  logger.info(`Submitting ${tests.length} test(s) to Xray (async job)…`);
   const res = await xrayRequest("post", "/import/test/bulk", tests);
   const jobId = typeof res === "string" ? res : (res.jobId ?? res.id ?? res);
+  logger.info(`Xray job queued: ${jobId} — waiting for completion (usually 30s–3min)…`);
   return pollImportJob(jobId, "test");
 }
 
@@ -174,21 +176,31 @@ async function pollImportJob(jobId, kind) {
       ? `/import/test/bulk/${jobId}/status`
       : `/import/execution/${jobId}/status`;
 
+  const doneStates = new Set(["successful", "finished", "complete", "completed", "done"]);
+  const failStates = new Set(["failed", "error", "aborted", "cancelled"]);
+
   for (let i = 0; i < 60; i++) {
     const status = await xrayRequest("get", statusPath);
-    const state = status.status ?? status.jobStatus;
+    const state = String(status.status ?? status.jobStatus ?? "unknown").toLowerCase();
+    const progress = status.progressValue ?? status.progress?.percent;
 
-    if (state === "successful" || state === "finished") {
+    if (i === 0 || i % 5 === 0 || doneStates.has(state) || failStates.has(state)) {
+      const pct = progress != null ? ` (${progress}%)` : "";
+      logger.info(`  Job ${jobId}: ${state}${pct} — poll ${i + 1}/60`);
+    }
+
+    if (doneStates.has(state)) {
+      logger.success(`Xray job ${jobId} completed`);
       return status;
     }
-    if (state === "failed" || state === "error") {
+    if (failStates.has(state)) {
       throw new Error(`Xray import job ${jobId} failed: ${JSON.stringify(status)}`);
     }
 
     await sleep(3000);
   }
 
-  throw new Error(`Xray import job ${jobId} timed out`);
+  throw new Error(`Xray import job ${jobId} timed out after ~3 minutes`);
 }
 
 export function extractKeysFromJob(jobStatus, testRailIds) {

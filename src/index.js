@@ -220,6 +220,7 @@ async function migrateCases(cases) {
   }
 
   if (!dryRun && config.scope.migrateAttachments) {
+    logger.info("Uploading attachments to Jira (can take a few minutes if many files)…");
     await migrateAttachments(cases, idMap);
   }
 
