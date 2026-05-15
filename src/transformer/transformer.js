@@ -79,10 +79,11 @@ export function transformCase(trCase, folderPath, dryRun = false) {
     ];
   }
 
+  // Xray bulk import expects root-level "fields" + "testtype" (not jira.fields / testType)
   const importPayload = {
-    testType: typeMap[trCase.type_id] ?? "Manual",
+    testtype: typeMap[trCase.type_id] ?? "Manual",
     steps: xraySteps,
-    jira: { fields },
+    fields,
   };
 
   return {
