@@ -4,6 +4,7 @@ import {
   hasStructuredSteps,
   parseDescription,
   getUnstructuredText,
+  extractTestRailSteps,
 } from "./parser.js";
 
 export function transformCase(trCase, folderPath, dryRun = false) {
@@ -16,7 +17,8 @@ export function transformCase(trCase, folderPath, dryRun = false) {
   let strategy = "structured";
 
   if (hasStructuredSteps(trCase)) {
-    steps = extractStructuredSteps(trCase);
+    steps = extractTestRailSteps(trCase);
+    if (steps.length === 0) steps = extractStructuredSteps(trCase);
   } else if (parserCfg.heuristicParse) {
     const text = getUnstructuredText(trCase, parserCfg.unstructuredTextFields);
     const parseResult = parseDescription(text);
@@ -135,39 +137,18 @@ export function buildFolderPath(suiteName, sectionPath = []) {
   return "/" + parts.join("/");
 }
 
-function extractStructuredSteps(trCase) {
-  let separated = trCase.custom_steps_separated;
-
-  if (typeof separated === "string") {
-    try {
-      separated = JSON.parse(separated);
-    } catch {
-      separated = [];
-    }
-  }
-
-  if (Array.isArray(separated) && separated.length > 0) {
-    return separated.map((step) => ({
-      action: step.content ?? step.step ?? "",
-      expected: step.expected ?? step.result ?? "",
-    }));
-  }
-
-  if (typeof trCase.custom_steps === "string" && trCase.custom_steps.trim()) {
-    return trCase.custom_steps
-      .split(/\n{2,}/)
-      .filter(Boolean)
-      .map((block) => ({ action: block.trim(), expected: "" }));
-  }
-
-  return [];
-}
-
 function buildDescription(trCase, strategy) {
   const parts = [];
 
   if (trCase.custom_preconds) {
-    parts.push(`Preconditions:\n${trCase.custom_preconds}`);
+    parts.push(`Preconditions:\n${stripHtml(trCase.custom_preconds)}`);
+  }
+
+  if (trCase.custom_expected && strategy === "structured") {
+    const exp = stripHtml(trCase.custom_expected);
+    if (exp && !stepsAlreadyHaveExpected(trCase)) {
+      parts.push(`Expected results (TestRail):\n${exp}`);
+    }
   }
 
   if (strategy !== "structured") {
@@ -195,4 +176,9 @@ function stripHtml(text) {
 
 function sanitizeFolderName(name) {
   return String(name).replace(/[/\\|<>:?"*]/g, "_").trim();
+}
+
+function stepsAlreadyHaveExpected(trCase) {
+  const steps = extractTestRailSteps(trCase);
+  return steps.some((s) => s.expected?.trim());
 }

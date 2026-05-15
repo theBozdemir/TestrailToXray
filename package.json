@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "migrate": "node src/index.js",
+    "reimport": "node src/index.js --reimport",
     "dry-run": "node src/index.js --dry-run",
     "audit": "node src/index.js --audit-only",
     "test-testrail": "node src/test-testrail.js",

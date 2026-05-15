@@ -24,6 +24,7 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const auditOnly = args.includes("--audit-only");
 const resultsOnly = args.includes("--results-only");
+const forceReimport = args.includes("--reimport");
 const caseIdsArg = args.find((a) => a.startsWith("--case-ids="));
 const cliCaseIds = caseIdsArg
   ? caseIdsArg
@@ -215,12 +216,13 @@ async function migrateCases(cases) {
     const metaList = [];
 
     for (const { case: trCase, folderPath } of batch) {
-      if (idMap[trCase.id]) {
+      if (!forceReimport && idMap[trCase.id]) {
         logger.info(`Skip TR-${trCase.id} — already mapped to ${idMap[trCase.id]}`);
         continue;
       }
 
-      const existing = dryRun ? null : await findExistingTestByLabel(trCase.id);
+      const existing =
+        dryRun || forceReimport ? null : await findExistingTestByLabel(trCase.id);
       if (existing) {
         idMap[trCase.id] = existing;
         logger.recordMigrated(trCase.id, existing);

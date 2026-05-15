@@ -144,6 +144,44 @@ function pairWithExpectedLines(steps, allLines, stepPattern) {
   return enriched;
 }
 
+/**
+ * TestRail often stores actions in custom_steps and expected results in custom_expected.
+ */
+export function extractTestRailSteps(testCase) {
+  let separated = testCase.custom_steps_separated;
+
+  if (typeof separated === "string" && separated.trim()) {
+    try {
+      separated = JSON.parse(separated);
+    } catch {
+      separated = [];
+    }
+  }
+
+  if (Array.isArray(separated) && separated.length > 0) {
+    return separated.map((step) => ({
+      action: step.content ?? step.step ?? "",
+      expected: step.expected ?? step.result ?? "",
+    }));
+  }
+
+  const actionsText = testCase.custom_steps?.trim() ?? "";
+  if (!actionsText) return [];
+
+  const steps = parseActionStepsFromText(actionsText);
+  const expectedText = normalizeExpectedField(testCase.custom_expected);
+
+  if (expectedText && steps.length > 0) {
+    if (steps.length === 1) {
+      steps[0].expected = expectedText;
+    } else {
+      steps[steps.length - 1].expected = expectedText;
+    }
+  }
+
+  return steps;
+}
+
 export function hasStructuredSteps(testCase) {
   const separated = testCase.custom_steps_separated;
 
@@ -154,21 +192,72 @@ export function hasStructuredSteps(testCase) {
       const parsed = JSON.parse(separated);
       return Array.isArray(parsed) && parsed.length > 0;
     } catch {
-      return false;
+      /* fall through */
     }
   }
 
-  return (
-    typeof testCase.custom_steps === "string" &&
-    testCase.custom_steps.trim().length > 0 &&
-    !looksLikeFreeformDescription(testCase.custom_steps)
-  );
+  return typeof testCase.custom_steps === "string" && testCase.custom_steps.trim().length > 0;
 }
 
-function looksLikeFreeformDescription(text) {
-  const lines = text.split("\n").filter((l) => l.trim());
-  const numbered = lines.filter((l) => /^(?:step\s*)?\d+[.):\-]\s+/i.test(l.trim()));
-  return numbered.length < 2 && lines.length > 3;
+function parseActionStepsFromText(text) {
+  const clean = stripHtml(text).trim();
+  if (!clean) return [];
+
+  const parts = clean
+    .split(/(?=(?:^|\n)\d+[\.)]\s)/m)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length > 1) {
+    return parts.map((part) => {
+      const m = part.match(/^\d+[\.)]\s*([\s\S]+)/);
+      return { action: (m ? m[1] : part).trim(), expected: "" };
+    });
+  }
+
+  const lines = clean.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const numbered = lines.filter((l) => /^\d+[\.)]\s/.test(l));
+
+  if (numbered.length >= 2) {
+    return numbered.map((line) => {
+      const m = line.match(/^\d+[\.)]\s*(.+)/);
+      return { action: m[1].trim(), expected: "" };
+    });
+  }
+
+  if (lines.length >= 2 && numbered.length === 0) {
+    return lines.map((line) => ({ action: line, expected: "" }));
+  }
+
+  return [{ action: clean, expected: "" }];
+}
+
+function normalizeExpectedField(text) {
+  if (!text || !String(text).trim()) return "";
+
+  const raw = String(text).trim();
+
+  if (/attachments\/get\/[a-f0-9-]+/i.test(raw)) {
+    const textOnly = stripHtml(raw).replace(/!\[[^\]]*\]\([^)]*\)/g, "").trim();
+    if (!textOnly || textOnly.length < 15) {
+      return "Expected result: screenshot/image from TestRail (see attachments on this issue).";
+    }
+    return textOnly;
+  }
+
+  return stripHtml(raw);
+}
+
+function stripHtml(text) {
+  return String(text)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
 }
 
 export function getUnstructuredText(testCase, fieldNames = []) {
