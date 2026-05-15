@@ -60,7 +60,7 @@ export async function resolveXrayRegion() {
       const token = await authenticateAtBase(base);
       const probe = await axios.post(
         `${base}/import/test/bulk`,
-        { tests: [] },
+        [],
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -162,7 +162,8 @@ function sleep(ms) {
 }
 
 export async function importTestsBulk(tests) {
-  const res = await xrayRequest("post", "/import/test/bulk", { tests });
+  // Xray expects a JSON array at the root, not { tests: [...] }
+  const res = await xrayRequest("post", "/import/test/bulk", tests);
   const jobId = typeof res === "string" ? res : (res.jobId ?? res.id ?? res);
   return pollImportJob(jobId, "test");
 }
