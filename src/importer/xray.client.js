@@ -22,7 +22,31 @@ const DONE_STATES = new Set([
   "completed",
   "done",
 ]);
-const FAIL_STATES = new Set(["failed", "error", "aborted", "cancelled", "canceled"]);
+const FAIL_STATES = new Set([
+  "failed",
+  "error",
+  "unsuccessful",
+  "aborted",
+  "cancelled",
+  "canceled",
+]);
+
+function formatJobFailure(status) {
+  const errs = status?.result?.errors ?? status?.errors;
+  if (Array.isArray(errs) && errs.length > 0) {
+    return errs
+      .map((e) => {
+        const n = e.elementNumber ?? e.index ?? "?";
+        const msgs = e.errors ?? e.messages ?? [e];
+        const detail = Array.isArray(msgs)
+          ? msgs.map((m) => m.xray ?? m.message ?? JSON.stringify(m)).join("; ")
+          : String(msgs);
+        return `item ${n}: ${detail}`;
+      })
+      .join(" | ");
+  }
+  return JSON.stringify(status?.result ?? status);
+}
 
 function isRegionMismatchError(err) {
   const text = JSON.stringify(err?.response?.data ?? err?.message ?? "").toLowerCase();
@@ -224,16 +248,13 @@ async function pollImportJob(jobId, kind, maxAttempts, intervalMs) {
       logger.info(`  Job ${jobId}: ${state}${pct} — poll ${i + 1}/${maxAttempts}`);
     }
 
-    if (isJobDone(lastStatus)) {
-      if (FAIL_STATES.has(state)) {
-        throw new Error(`Xray import job ${jobId} failed: ${JSON.stringify(lastStatus)}`);
-      }
-      logger.success(`Xray job ${jobId} completed`);
-      return lastStatus;
+    if (FAIL_STATES.has(state)) {
+      throw new Error(`Xray import job ${jobId} failed (${state}): ${formatJobFailure(lastStatus)}`);
     }
 
-    if (FAIL_STATES.has(state)) {
-      throw new Error(`Xray import job ${jobId} failed: ${JSON.stringify(lastStatus)}`);
+    if (isJobDone(lastStatus)) {
+      logger.success(`Xray job ${jobId} completed`);
+      return lastStatus;
     }
 
     await sleep(intervalMs);
