@@ -1,0 +1,8 @@
+node_modules/
+logs/
+reports/
+.env
+*.log
+
+# Never commit API keys — use migration.config.example.js as template
+config/migration.config.js

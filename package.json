@@ -1,0 +1,17 @@
+{
+  "name": "testrail-to-xray-migration",
+  "version": "1.0.0",
+  "description": "Migrate test cases, attachments, and historical results from TestRail to Xray (Jira Cloud)",
+  "type": "module",
+  "scripts": {
+    "migrate": "node src/index.js",
+    "dry-run": "node src/index.js --dry-run",
+    "audit": "node src/index.js --audit-only",
+    "results-only": "node src/index.js --results-only"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "form-data": "^4.0.0",
+    "p-limit": "^6.1.0"
+  }
+}
