@@ -1,7 +1,6 @@
 import axios from "axios";
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
-import { logger } from "../utils/logger.js";
 
 /** Xray Cloud regional endpoints (Data Residency). */
 export const XRAY_REGION_BASES = [
@@ -14,6 +13,16 @@ export const XRAY_REGION_BASES = [
 let xrayBase = config.xray.apiBaseUrl ?? XRAY_REGION_BASES[0];
 let cachedToken = null;
 let tokenExpiresAt = 0;
+
+const DONE_STATES = new Set([
+  "successful",
+  "success",
+  "finished",
+  "complete",
+  "completed",
+  "done",
+]);
+const FAIL_STATES = new Set(["failed", "error", "aborted", "cancelled", "canceled"]);
 
 function isRegionMismatchError(err) {
   const text = JSON.stringify(err?.response?.data ?? err?.message ?? "").toLowerCase();
@@ -33,6 +42,35 @@ function normalizeToken(data) {
   return token;
 }
 
+function getJobState(status) {
+  return String(
+    status?.status ??
+      status?.jobStatus ??
+      status?.result?.status ??
+      status?.state ??
+      "unknown"
+  ).toLowerCase();
+}
+
+function getJobProgress(status) {
+  if (status?.progressValue != null) return Number(status.progressValue);
+  if (Array.isArray(status?.progress) && status.progress.length > 0) {
+    const last = status.progress[status.progress.length - 1];
+    const m = String(last).match(/(\d+)\s*%/);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
+function isJobDone(status) {
+  const state = getJobState(status);
+  if (DONE_STATES.has(state)) return true;
+  const progress = getJobProgress(status);
+  if (progress != null && progress >= 100) return true;
+  if (status?.result?.issues?.length > 0 && !FAIL_STATES.has(state)) return true;
+  return false;
+}
+
 async function authenticateAtBase(base) {
   const res = await axios.post(
     `${base}/authenticate`,
@@ -45,7 +83,6 @@ async function authenticateAtBase(base) {
   return normalizeToken(res.data);
 }
 
-/** Find the regional Xray API that matches your Jira data residency. */
 export async function resolveXrayRegion() {
   if (config.xray.apiBaseUrl) {
     xrayBase = config.xray.apiBaseUrl;
@@ -53,24 +90,19 @@ export async function resolveXrayRegion() {
     return xrayBase;
   }
 
-  const basesToTry = XRAY_REGION_BASES.filter((b) => b !== xrayBase);
-  const allBases = [xrayBase, ...basesToTry];
+  const allBases = [...new Set([xrayBase, ...XRAY_REGION_BASES])];
 
   for (const base of allBases) {
     try {
       const token = await authenticateAtBase(base);
-      const probe = await axios.post(
-        `${base}/import/test/bulk`,
-        [],
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 30_000,
-          validateStatus: () => true,
-        }
-      );
+      const probe = await axios.post(`${base}/import/test/bulk`, [], {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 30_000,
+        validateStatus: () => true,
+      });
 
       if (probe.status === 401 && isRegionMismatchError({ response: probe })) {
         continue;
@@ -88,8 +120,7 @@ export async function resolveXrayRegion() {
   }
 
   throw new Error(
-    "Could not determine Xray region. Set xray.apiBaseUrl in config, e.g. " +
-      '"https://eu.xray.cloud.getxray.app/api/v2"'
+    'Could not determine Xray region. Set xray.apiBaseUrl, e.g. "https://eu.xray.cloud.getxray.app/api/v2"'
   );
 }
 
@@ -102,10 +133,8 @@ export async function authenticateXray() {
   } catch (e) {
     const status = e.response?.status;
     const body = e.response?.data;
-    const hint =
-      "Check xray.clientId and xray.clientSecret. Keys must be from the same Jira site as jiraBaseUrl.";
     throw new Error(
-      `Xray authenticate failed${status ? ` (HTTP ${status})` : ""}: ${JSON.stringify(body) ?? e.message}. ${hint}`
+      `Xray authenticate failed${status ? ` (HTTP ${status})` : ""}: ${JSON.stringify(body) ?? e.message}`
     );
   }
 }
@@ -143,15 +172,11 @@ async function xrayRequest(method, path, body, retried = false) {
 
     if (status === 401 && !isRegionMismatchError(e)) {
       cachedToken = null;
-      throw new Error(
-        `Xray 401 — check API keys and license. ${JSON.stringify(body) ?? e.message}`
-      );
+      throw new Error(`Xray 401 — check API keys and license. ${JSON.stringify(body) ?? e.message}`);
     }
 
     if (status === 400) {
-      throw new Error(
-        `Xray 400 Bad Request on ${path}: ${JSON.stringify(body) ?? e.message}`
-      );
+      throw new Error(`Xray 400 on ${path}: ${JSON.stringify(body) ?? e.message}`);
     }
 
     throw e;
@@ -162,54 +187,87 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+export async function getImportJobStatus(jobId, kind = "test") {
+  const statusPath =
+    kind === "test"
+      ? `/import/test/bulk/${jobId}/status`
+      : `/import/execution/${jobId}/status`;
+  return xrayRequest("get", statusPath);
+}
+
 export async function importTestsBulk(tests) {
   logger.info(`Submitting ${tests.length} test(s) to Xray (async job)…`);
   const res = await xrayRequest("post", "/import/test/bulk", tests);
   const jobId = typeof res === "string" ? res : (res.jobId ?? res.id ?? res);
-  logger.info(`Xray job queued: ${jobId} — waiting for completion (usually 30s–3min)…`);
-  return pollImportJob(jobId, "test");
+  const maxAttempts = config.xray.jobPollAttempts ?? 120;
+  const intervalMs = config.xray.jobPollIntervalMs ?? 5000;
+  const maxMin = Math.round((maxAttempts * intervalMs) / 60000);
+  logger.info(`Xray job ${jobId} — waiting up to ~${maxMin} min (poll every ${intervalMs / 1000}s)…`);
+  return pollImportJob(jobId, "test", maxAttempts, intervalMs);
 }
 
-async function pollImportJob(jobId, kind) {
+async function pollImportJob(jobId, kind, maxAttempts, intervalMs) {
   const statusPath =
     kind === "test"
       ? `/import/test/bulk/${jobId}/status`
       : `/import/execution/${jobId}/status`;
 
-  const doneStates = new Set(["successful", "finished", "complete", "completed", "done"]);
-  const failStates = new Set(["failed", "error", "aborted", "cancelled"]);
+  let lastStatus = null;
 
-  for (let i = 0; i < 60; i++) {
-    const status = await xrayRequest("get", statusPath);
-    const state = String(status.status ?? status.jobStatus ?? "unknown").toLowerCase();
-    const progress = status.progressValue ?? status.progress?.percent;
+  for (let i = 0; i < maxAttempts; i++) {
+    lastStatus = await xrayRequest("get", statusPath);
+    const state = getJobState(lastStatus);
+    const progress = getJobProgress(lastStatus);
 
-    if (i === 0 || i % 5 === 0 || doneStates.has(state) || failStates.has(state)) {
-      const pct = progress != null ? ` (${progress}%)` : "";
-      logger.info(`  Job ${jobId}: ${state}${pct} — poll ${i + 1}/60`);
+    if (i === 0 || i % 3 === 0 || DONE_STATES.has(state) || FAIL_STATES.has(state)) {
+      const pct = progress != null ? ` ${progress}%` : "";
+      logger.info(`  Job ${jobId}: ${state}${pct} — poll ${i + 1}/${maxAttempts}`);
     }
 
-    if (doneStates.has(state)) {
+    if (isJobDone(lastStatus)) {
+      if (FAIL_STATES.has(state)) {
+        throw new Error(`Xray import job ${jobId} failed: ${JSON.stringify(lastStatus)}`);
+      }
       logger.success(`Xray job ${jobId} completed`);
-      return status;
-    }
-    if (failStates.has(state)) {
-      throw new Error(`Xray import job ${jobId} failed: ${JSON.stringify(status)}`);
+      return lastStatus;
     }
 
-    await sleep(3000);
+    if (FAIL_STATES.has(state)) {
+      throw new Error(`Xray import job ${jobId} failed: ${JSON.stringify(lastStatus)}`);
+    }
+
+    await sleep(intervalMs);
   }
 
-  throw new Error(`Xray import job ${jobId} timed out after ~3 minutes`);
+  const err = new Error(
+    `Xray import job ${jobId} timed out after ~${Math.round((maxAttempts * intervalMs) / 60000)} minutes`
+  );
+  err.jobId = jobId;
+  err.lastStatus = lastStatus;
+  throw err;
 }
 
 export function extractKeysFromJob(jobStatus, testRailIds) {
   const map = {};
-  const issues = jobStatus.issues ?? jobStatus.result?.issues ?? [];
+  const issues =
+    jobStatus?.issues ??
+    jobStatus?.result?.issues ??
+    jobStatus?.result?.createdIssues ??
+    [];
 
   for (let i = 0; i < testRailIds.length; i++) {
     const issue = issues[i];
     if (issue?.key) map[testRailIds[i]] = issue.key;
+  }
+
+  if (Object.keys(map).length === 0 && issues.length > 0) {
+    for (const issue of issues) {
+      const labels = issue?.fields?.labels ?? issue?.labels ?? [];
+      for (const label of labels) {
+        const m = String(label).match(/^testrail-case-(\d+)$/);
+        if (m) map[Number(m[1])] = issue.key;
+      }
+    }
   }
 
   return map;
@@ -218,5 +276,10 @@ export function extractKeysFromJob(jobStatus, testRailIds) {
 export async function importExecution(info, tests) {
   const res = await xrayRequest("post", "/import/execution", { info, tests });
   const jobId = typeof res === "string" ? res : (res.jobId ?? res.id ?? res);
-  return pollImportJob(jobId, "execution");
+  return pollImportJob(
+    jobId,
+    "execution",
+    config.xray.jobPollAttempts ?? 120,
+    config.xray.jobPollIntervalMs ?? 5000
+  );
 }

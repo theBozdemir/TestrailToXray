@@ -29,6 +29,11 @@ export const config = {
     // Set true only if priority names in priorityMap match your Jira scheme
     includePriority: false,
 
+    // Tests per Xray bulk job (1 = most reliable for pilot)
+    importBatchSize: 1,
+    jobPollAttempts: 120,
+    jobPollIntervalMs: 5000,
+
     // If you get "Xray data is in another region", set your regional API base:
     // Global: https://xray.cloud.getxray.app/api/v2
     // EU:     https://eu.xray.cloud.getxray.app/api/v2

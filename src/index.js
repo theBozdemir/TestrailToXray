@@ -150,9 +150,39 @@ async function runAudit(cases) {
   return audit;
 }
 
+async function recoverFromJira(metaList, idMap) {
+  let recovered = 0;
+  for (const m of metaList) {
+    if (idMap[m.testRailId]) continue;
+    const key = await findExistingTestByLabel(m.testRailId);
+    if (key) {
+      idMap[m.testRailId] = key;
+      logger.recordMigrated(m.testRailId, key);
+      logger.success(`TR-${m.testRailId} → ${key} (found in Jira)`);
+      recovered++;
+    }
+  }
+  return recovered;
+}
+
 async function importBatch(imports, metaList, idMap) {
-  const job = await importTestsBulk(imports);
   const trIds = metaList.map((m) => m.testRailId);
+  let job;
+
+  try {
+    job = await importTestsBulk(imports);
+  } catch (e) {
+    if (e.message?.includes("timed out")) {
+      logger.warn(`Job ${e.jobId ?? "?"} timed out — checking Jira for created tests…`);
+      const n = await recoverFromJira(metaList, idMap);
+      if (n > 0) {
+        logger.info(`Recovered ${n}/${metaList.length} test(s) from Jira after timeout`);
+        return;
+      }
+    }
+    throw e;
+  }
+
   const batchMap = extractKeysFromJob(job, trIds);
 
   for (const m of metaList) {
@@ -162,14 +192,22 @@ async function importBatch(imports, metaList, idMap) {
       logger.recordMigrated(m.testRailId, key);
       logger.success(`TR-${m.testRailId} → ${key}`);
     } else {
-      logger.recordError(`import(${m.testRailId})`, "No issue key returned from Xray job");
+      const fromJira = await findExistingTestByLabel(m.testRailId);
+      if (fromJira) {
+        idMap[m.testRailId] = fromJira;
+        logger.recordMigrated(m.testRailId, fromJira);
+        logger.success(`TR-${m.testRailId} → ${fromJira} (found in Jira)`);
+      } else {
+        logger.recordError(`import(${m.testRailId})`, "No issue key returned from Xray job");
+      }
     }
   }
 }
 
 async function migrateCases(cases) {
   const idMap = loadExistingIdMap();
-  const batchSize = 25;
+  // Import 1 test per Xray job — avoids queue timeouts (only 1 bulk job per user at a time)
+  const batchSize = config.xray.importBatchSize ?? 1;
 
   for (let i = 0; i < cases.length; i += batchSize) {
     const batch = cases.slice(i, i + batchSize);
