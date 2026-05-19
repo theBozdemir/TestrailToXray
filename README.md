@@ -1,14 +1,7 @@
-# TestRail → Xray (Jira Cloud) Migration
+# TestRail → Xray (Jira Cloud) Migration - Created By Tarik Bozdemir
 
 Local Node.js tool to migrate test cases (structured steps + free-text descriptions), attachments (photos/files), and optionally historical test results.
 
-## Your questions answered
-
-| Question | Answer |
-|----------|--------|
-| **Will we lose previous test run results?** | Not if you migrate them. TestRail history does not appear in Xray automatically. This project can import results into Xray Test Executions (see `results-only`). Without that step, TestRail remains your archive. |
-| **Can we migrate test cases with photos/attachments?** | Yes. Attachments are downloaded from TestRail and uploaded to the matching Jira/Xray issue. |
-| **Is this doable?** | Yes. Mixed formats (steps field vs description) are handled by a parser + manual-review queue. Expect some cases to need human cleanup. |
 
 ## Setup
 
