@@ -31,8 +31,10 @@ export const config = {
     // Set true only if priority names in priorityMap match your Jira scheme
     includePriority: false,
 
-    // Jira issue link type for TestRail refs (must exist in your Jira)
-    issueLinkType: "Relates",
+    // Jira issue link type for TestRail refs (must exist in your Jira project)
+    issueLinkType: "verifies",
+    // true = migrated Test on "verifies" side (outward), ref on inward — default for Verifies
+    issueLinkTestOnOutward: true,
 
     // Only matching refs become Linked work items (PROJECT-123, e.g. FB-1, WSC-99, SAC-100)
     refLinkPattern: "^[A-Z][A-Z0-9]+-\\d+$",

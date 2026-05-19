@@ -85,16 +85,23 @@ export async function updateIssueDescription(issueKey, description, attachments 
  */
 export async function linkIssues(fromKey, toKeys) {
   const linkType = config.xray.issueLinkType ?? "Relates";
+  const testOnOutward =
+    config.xray.issueLinkTestOnOutward ??
+    /verif/i.test(linkType);
 
   for (const toKey of toKeys) {
     if (!toKey || toKey === fromKey) continue;
     try {
+      const payload = testOnOutward
+        ? { inwardIssue: { key: toKey }, outwardIssue: { key: fromKey } }
+        : { inwardIssue: { key: fromKey }, outwardIssue: { key: toKey } };
+
       await client.post("/issueLink", {
         type: { name: linkType },
-        inwardIssue: { key: fromKey },
-        outwardIssue: { key: toKey },
+        ...payload,
       });
-      logger.info(`Linked ${fromKey} ↔ ${toKey}`);
+      const arrow = testOnOutward ? `${fromKey} → verifies → ${toKey}` : `${fromKey} ↔ ${toKey}`;
+      logger.info(`Linked ${arrow} (${linkType})`);
     } catch (e) {
       const msg = e.response?.data?.errorMessages?.join?.(" ") ?? e.message;
       logger.recordWarning(`jira.link(${fromKey}->${toKey})`, msg);
