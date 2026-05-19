@@ -8,10 +8,15 @@ import {
   extractTestRailSteps,
 } from "./parser.js";
 import {
+  formatCaseDescriptionSection,
   formatPreconditionsSection,
   formatReferences,
   replaceTestRailAttachmentRefs,
 } from "../utils/jira-content.js";
+import {
+  formatCustomFieldsSections,
+  formatResultCustomFields,
+} from "../utils/testrail-custom-fields.js";
 
 /** Avoid wiki image syntax in Xray steps (causes broken loaders); post-process sets HTML images. */
 function formatStepResultForImport(expected, attachmentMap) {
@@ -34,7 +39,7 @@ function formatStepResultForImport(expected, attachmentMap) {
 }
 
 export function transformCase(trCase, folderPath, dryRun = false, options = {}) {
-  const { attachmentMap = new Map(), idMap = {} } = options;
+  const { attachmentMap = new Map(), idMap = {}, caseFieldDefs = [] } = options;
   const { priorityMap, typeMap, customFieldMap, parser: parserCfg } = config;
 
   let steps = [];
@@ -65,7 +70,7 @@ export function transformCase(trCase, folderPath, dryRun = false, options = {}) 
   if (needsReview) labels.push("needs-manual-review");
   if (strategy !== "structured") labels.push(`parsed-${strategy}`);
 
-  const descriptionText = buildDescription(trCase, strategy, attachmentMap, idMap);
+  const descriptionText = buildDescription(trCase, strategy, attachmentMap, idMap, caseFieldDefs);
   const fields = {
     project: { key: config.xray.jiraProjectKey },
     summary: String(trCase.title ?? "Untitled").slice(0, 255),
@@ -126,15 +131,31 @@ export function transformCase(trCase, folderPath, dryRun = false, options = {}) 
   };
 }
 
-export function buildDescription(trCase, strategy, attachmentMap = new Map(), idMap = {}) {
+export function buildDescription(
+  trCase,
+  strategy,
+  attachmentMap = new Map(),
+  idMap = {},
+  caseFieldDefs = []
+) {
   const parts = [];
+
+  const description = formatCaseDescriptionSection(trCase, attachmentMap);
+  if (description) parts.push(description);
+
+  if (config.scope.includeAllCustomFields !== false && caseFieldDefs.length > 0) {
+    parts.push(...formatCustomFieldsSections(trCase, caseFieldDefs, attachmentMap));
+  }
 
   const pre = formatPreconditionsSection(trCase.custom_preconds, attachmentMap);
   if (pre) parts.push(pre);
 
   if (strategy !== "structured") {
+    const fields = (config.parser.unstructuredTextFields ?? []).filter(
+      (f) => f !== "custom_tc_description" && f !== "custom_description"
+    );
     const original = replaceTestRailAttachmentRefs(
-      getUnstructuredText(trCase, config.parser.unstructuredTextFields),
+      getUnstructuredText(trCase, fields),
       attachmentMap
     );
     if (original) parts.push(`*Original TestRail text*\n${original}`);
@@ -165,7 +186,13 @@ function toXrayExecutionStatus(statusId) {
   return aliases[name] ?? name;
 }
 
-export function transformResult(trResult, xrayTestKey, evidence = [], defectKeys = []) {
+export function transformResult(
+  trResult,
+  xrayTestKey,
+  evidence = [],
+  defectKeys = [],
+  resultFieldDefs = []
+) {
   const { userMap } = config;
 
   const assigneeAccountId = trResult.tested_by
@@ -187,6 +214,8 @@ export function transformResult(trResult, xrayTestKey, evidence = [], defectKeys
         : [];
 
   const commentParts = [];
+  const resultCustom = formatResultCustomFields(trResult, resultFieldDefs);
+  if (resultCustom) commentParts.push(resultCustom);
   if (trResult.comment?.trim()) commentParts.push(trResult.comment.trim());
   if (defects.length === 0 && trResult.defects?.trim()) {
     commentParts.push(`Defects (not linked — check keys exist in Jira): ${trResult.defects}`);

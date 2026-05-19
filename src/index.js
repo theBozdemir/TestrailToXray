@@ -16,8 +16,11 @@ import {
   getTestsForRun,
   getAttachmentsForRun,
   getAttachmentsForCase,
+  getCaseFields,
+  getResultFields,
   downloadAttachment,
 } from "./extractor/testrail.client.js";
+import { buildFieldMapsFromDefs } from "./utils/testrail-custom-fields.js";
 import {
   transformCase,
   transformResult,
@@ -56,6 +59,7 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const auditOnly = args.includes("--audit-only");
 const resultsOnly = args.includes("--results-only");
+const repairDescriptions = args.includes("--repair-descriptions");
 const forceReimport = args.includes("--reimport");
 const caseIdsArg = args.find((a) => a.startsWith("--case-ids="));
 const cliCaseIds = caseIdsArg
@@ -237,8 +241,22 @@ async function importBatch(imports, metaList, idMap) {
   }
 }
 
+async function loadCaseFieldDefs() {
+  if (config.scope.includeAllCustomFields === false) return [];
+  return getCaseFields();
+}
+
+async function loadResultFieldDefs() {
+  if (config.scope.includeAllCustomFields === false) return [];
+  return getResultFields();
+}
+
 async function migrateCases(cases) {
   const idMap = loadExistingIdMap();
+  const caseFieldDefs = await loadCaseFieldDefs();
+  if (caseFieldDefs.length > 0) {
+    logger.info(`Loaded ${caseFieldDefs.length} TestRail case field definition(s) from API`);
+  }
   // Import 1 test per Xray job — avoids queue timeouts (only 1 bulk job per user at a time)
   const batchSize = config.xray.importBatchSize ?? 1;
 
@@ -267,6 +285,7 @@ async function migrateCases(cases) {
       const { importPayload, meta } = transformCase(trCase, folderPath, dryRun, {
         attachmentMap,
         idMap,
+        caseFieldDefs,
       });
       imports.push(importPayload);
       metaList.push(meta);
@@ -299,13 +318,13 @@ async function migrateCases(cases) {
 
   if (!dryRun && config.scope.migrateAttachments) {
     logger.info("Uploading attachments to Jira (can take a few minutes if many files)…");
-    await migrateAttachments(cases, idMap);
+    await migrateAttachments(cases, idMap, caseFieldDefs);
   }
 
   return idMap;
 }
 
-async function migrateAttachments(cases, idMap) {
+async function migrateAttachments(cases, idMap, caseFieldDefs = []) {
   const limit = pLimit(config.testRail.concurrency ?? 3);
 
   await Promise.all(
@@ -345,15 +364,29 @@ async function migrateAttachments(cases, idMap) {
           }
         }
 
-        await postProcessIssue(trCase, issueKey, attachmentMap, idMap, attachments);
+        await postProcessIssue(
+          trCase,
+          issueKey,
+          attachmentMap,
+          idMap,
+          attachments,
+          caseFieldDefs
+        );
       })
     )
   );
 }
 
-async function postProcessIssue(trCase, issueKey, attachmentMap, idMap, testrailAttachments = []) {
+async function postProcessIssue(
+  trCase,
+  issueKey,
+  attachmentMap,
+  idMap,
+  testrailAttachments = [],
+  caseFieldDefs = []
+) {
   const strategy = hasStructuredSteps(trCase) ? "structured" : "heuristic";
-  const description = buildDescription(trCase, strategy, attachmentMap, idMap);
+  const description = buildDescription(trCase, strategy, attachmentMap, idMap, caseFieldDefs);
 
   let jiraAttachments = [];
   try {
@@ -459,6 +492,11 @@ function saveImportedRuns(importedRuns) {
 }
 
 async function migrateResults(idMap) {
+  const resultFieldDefs = await loadResultFieldDefs();
+  if (resultFieldDefs.length > 0) {
+    logger.info(`Loaded ${resultFieldDefs.length} TestRail result field definition(s) from API`);
+  }
+
   const projectId = config.testRail.projectId;
   const lookback = config.scope.resultsLookbackDays ?? 180;
   let runs = await getRuns(projectId);
@@ -550,7 +588,7 @@ async function migrateResults(idMap) {
             defectLinkCount += defectKeys.length;
           }
 
-          return transformResult(r, xrayKey, evidence, defectKeys);
+          return transformResult(r, xrayKey, evidence, defectKeys, resultFieldDefs);
         })
       )
     );
@@ -621,6 +659,41 @@ async function migrateResults(idMap) {
   );
 }
 
+async function repairDescriptionsForCases(idMap, caseIds) {
+  const caseFieldDefs = await loadCaseFieldDefs();
+  const limit = pLimit(config.testRail.concurrency ?? 3);
+  const targets = caseIds.length
+    ? caseIds.filter((id) => idMap[id])
+    : Object.keys(idMap).map(Number);
+
+  if (targets.length === 0) {
+    logger.warn("No mapped cases to repair — check id-map.json and --case-ids");
+    return;
+  }
+
+  await Promise.all(
+    targets.map((trId) =>
+      limit(async () => {
+        const issueKey = idMap[trId];
+        if (!issueKey || String(issueKey).startsWith("DRY-RUN")) return;
+
+        const trCase = await getCase(trId);
+        const attachments = await getAttachmentsForCase(trId);
+        const attachmentMap = buildAttachmentIdMap(attachments);
+        await postProcessIssue(
+          trCase,
+          issueKey,
+          attachmentMap,
+          idMap,
+          attachments,
+          caseFieldDefs
+        );
+        logger.success(`Repaired description on ${issueKey} (TR-${trId})`);
+      })
+    )
+  );
+}
+
 function validateConfig() {
   const missing = [];
   if (config.testRail.baseUrl.includes("YOUR_COMPANY")) missing.push("testRail.baseUrl");
@@ -646,6 +719,14 @@ async function main() {
   }
 
   const idMap = loadExistingIdMap();
+
+  if (repairDescriptions) {
+    const ids = cliCaseIds.length ? cliCaseIds : Object.keys(idMap).map(Number);
+    logger.info(`Repairing Jira descriptions for ${ids.length} case(s)…`);
+    await repairDescriptionsForCases(idMap, ids);
+    writeReport(idMap, dryRun);
+    return;
+  }
 
   if (resultsOnly) {
     if (!config.scope.migrateResults) {

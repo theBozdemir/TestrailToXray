@@ -138,3 +138,17 @@ export async function downloadAttachment(attachmentId) {
 export async function getCase(caseId) {
   return get(`/get_case/${caseId}`);
 }
+
+/** All test case custom field definitions (labels, types, dropdown options). */
+export async function getCaseFields() {
+  logger.info("Fetching TestRail case field definitions…");
+  const data = await get("/get_case_fields");
+  return Array.isArray(data) ? data : (data.fields ?? []);
+}
+
+/** All test result custom field definitions. */
+export async function getResultFields() {
+  logger.info("Fetching TestRail result field definitions…");
+  const data = await get("/get_result_fields");
+  return Array.isArray(data) ? data : (data.fields ?? []);
+}

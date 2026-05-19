@@ -10,7 +10,9 @@
     "audit": "node src/index.js --audit-only",
     "test-testrail": "node src/test-testrail.js",
     "test-xray": "node src/test-xray.js",
-    "results-only": "node src/index.js --results-only"
+    "results-only": "node src/index.js --results-only",
+    "repair-descriptions": "node src/index.js --repair-descriptions",
+    "fetch-fields": "node src/fetch-testrail-fields.js"
   },
   "dependencies": {
     "axios": "^1.7.2",

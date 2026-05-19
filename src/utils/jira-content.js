@@ -223,6 +223,36 @@ export function formatReferences(refs, idMap = {}) {
   return `${jiraBold("References")}\n${links.join("\n")}`;
 }
 
+/** TestRail template fields that hold the case-level description (not steps/expected). */
+export const CASE_DESCRIPTION_FIELDS = [
+  "custom_tc_description",
+  "custom_description",
+];
+
+/**
+ * Case-level description for Jira (TestRail "Description" / TC Description field).
+ */
+export function formatCaseDescriptionSection(trCase, attachmentIdToFilename = new Map()) {
+  const parts = [];
+  for (const field of CASE_DESCRIPTION_FIELDS) {
+    const val = trCase[field];
+    if (typeof val === "string" && val.trim()) {
+      parts.push(val.trim());
+    }
+  }
+  if (parts.length === 0) return null;
+
+  const body = replaceTestRailAttachmentRefs(parts.join("\n\n"), attachmentIdToFilename);
+  if (!body) return null;
+
+  const withImageLines = body.replace(
+    /([^\n])\s*(!\S[^|!\n]*(?:\|[^!]*)?!)/g,
+    "$1\n\n$2"
+  );
+
+  return `${jiraBold("Description")}\n\n${withImageLines.trim()}`;
+}
+
 /**
  * Preconditions block for issue description (Xray has no preconditions field on Tests).
  */

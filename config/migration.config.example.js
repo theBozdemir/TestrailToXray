@@ -57,6 +57,8 @@ export const config = {
   scope: {
     migrateTestCases: true,
     migrateAttachments: true,
+    // Fetch get_case_fields / get_result_fields on each run and include values in descriptions
+    includeAllCustomFields: true,
     // Import TestRail test runs as Xray Test Executions (requires runs in TestRail)
     migrateResults: false,
     resultsLookbackDays: 180,
@@ -74,6 +76,7 @@ export const config = {
     heuristicParse: true,
     minConfidence: 0.6,
     unstructuredTextFields: [
+      "custom_tc_description",
       "custom_steps",
       "custom_description",
       "custom_expected",
