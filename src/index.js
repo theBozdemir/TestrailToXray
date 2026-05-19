@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "fs";
+import path from "path";
 import pLimit from "p-limit";
 import { config } from "../config/migration.config.js";
 import { logger } from "./utils/logger.js";
@@ -12,6 +13,8 @@ import {
   getCase,
   getRuns,
   getResults,
+  getTestsForRun,
+  getAttachmentsForRun,
   getAttachmentsForCase,
   downloadAttachment,
 } from "./extractor/testrail.client.js";
@@ -31,6 +34,8 @@ import {
   updateIssueDescription,
   linkIssues,
   resolveRefKeys,
+  collectDefectKeysFromResult,
+  issueExists,
 } from "./importer/jira.client.js";
 import {
   buildAttachmentIdMap,
@@ -42,6 +47,10 @@ import {
 } from "./utils/jira-content.js";
 import { getXrayTestSteps, updateTestStepWithAttachments } from "./importer/xray-steps.client.js";
 import { extractTestRailSteps, getRawStepExpecteds } from "./transformer/parser.js";
+import {
+  buildResultEvidence,
+  groupAttachmentsByResultId,
+} from "./utils/result-evidence.js";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -433,45 +442,183 @@ async function postProcessTestSteps(trCase, issueKey, attachmentMap, testrailAtt
   }
 }
 
+function loadImportedRuns() {
+  const file = config.output.importedRunsFile ?? "./reports/imported-runs.json";
+  try {
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+function saveImportedRuns(importedRuns) {
+  const file = config.output.importedRunsFile ?? "./reports/imported-runs.json";
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(importedRuns, null, 2));
+}
+
 async function migrateResults(idMap) {
   const projectId = config.testRail.projectId;
-  const runs = await getRuns(projectId);
+  const lookback = config.scope.resultsLookbackDays ?? 180;
+  let runs = await getRuns(projectId);
+
+  const runIdFilter = config.testRail.runIds ?? [];
+  if (runIdFilter.length) {
+    runs = runs.filter((r) => runIdFilter.includes(r.id));
+  }
+
+  if (runs.length === 0) {
+    logger.warn(
+      `No TestRail test runs found in project ${projectId} (last ${lookback} days). ` +
+        "Create/complete a run in TestRail first, or increase scope.resultsLookbackDays."
+    );
+    return;
+  }
+
+  const importedRuns = loadImportedRuns();
+  let importedCount = 0;
+  let skippedCount = 0;
 
   for (const run of runs) {
-    const results = await getResults(run.id);
-    const tests = [];
-
-    for (const r of results) {
-      const caseId = r.case_id ?? r.test_id;
-      const xrayKey = idMap[caseId];
-      if (!xrayKey) continue;
-      tests.push(transformResult(r, xrayKey));
+    if (importedRuns[String(run.id)] && !forceReimport) {
+      logger.info(`Skip run ${run.id} "${run.name}" — already imported`);
+      skippedCount++;
+      continue;
     }
 
-    if (tests.length === 0) continue;
+    const results = await getResults(run.id);
+    const testsInRun = await getTestsForRun(run.id);
+    const testIdToCaseId = Object.fromEntries(
+      testsInRun.map((t) => [t.id, t.case_id])
+    );
+
+    const migrateEvidence =
+      config.scope.migrateResultAttachments !== false && !dryRun;
+    const runAttachments = migrateEvidence ? await getAttachmentsForRun(run.id) : [];
+    const attachmentsByResultId = groupAttachmentsByResultId(runAttachments);
+
+    const evidenceLimit = pLimit(config.testRail.concurrency ?? 3);
+    const maxFiles = config.scope.resultEvidenceMaxFiles ?? 20;
+    const maxTotalBytes =
+      (config.scope.resultEvidenceMaxTotalMb ?? 25) * 1024 * 1024;
+
+    const tests = [];
+    let evidenceFileCount = 0;
+    let defectLinkCount = 0;
+
+    const resultJobs = results
+      .map((r) => {
+        const caseId = r.case_id ?? testIdToCaseId[r.test_id];
+        if (!caseId) return null;
+        const xrayKey = idMap[caseId];
+        if (!xrayKey) return null;
+        return { r, xrayKey };
+      })
+      .filter(Boolean);
+
+    const transformed = await Promise.all(
+      resultJobs.map(({ r, xrayKey }) =>
+        evidenceLimit(async () => {
+          let evidence = [];
+          if (migrateEvidence) {
+            evidence = await buildResultEvidence(
+              r,
+              attachmentsByResultId,
+              runAttachments,
+              { downloadAttachment, maxFiles, maxTotalBytes }
+            );
+            evidenceFileCount += evidence.length;
+          }
+
+          let defectKeys = [];
+          if (config.scope.migrateResultDefects !== false) {
+            defectKeys = collectDefectKeysFromResult(r);
+            if (config.scope.validateResultDefects && defectKeys.length > 0) {
+              const validated = [];
+              for (const key of defectKeys) {
+                if (await issueExists(key)) validated.push(key);
+                else {
+                  logger.recordWarning(
+                    `result-defect(${r.id})`,
+                    `Jira issue ${key} not found — skipped`
+                  );
+                }
+              }
+              defectKeys = validated;
+            }
+            defectLinkCount += defectKeys.length;
+          }
+
+          return transformResult(r, xrayKey, evidence, defectKeys);
+        })
+      )
+    );
+    tests.push(...transformed);
+
+    if (tests.length === 0) {
+      logger.info(`Skip run ${run.id} "${run.name}" — no results for migrated tests`);
+      continue;
+    }
+
+    const startDate = run.created_on
+      ? new Date(run.created_on * 1000).toISOString()
+      : new Date().toISOString();
+    const finishDate = run.completed_on
+      ? new Date(run.completed_on * 1000).toISOString()
+      : startDate;
 
     const info = {
-      summary: `TestRail run: ${run.name} (ID ${run.id})`,
-      description: `Imported from TestRail run ${run.id}`,
+      summary: `TestRail: ${run.name}`,
+      description:
+        `Imported from TestRail test run ${run.id}.\n` +
+        (run.url ? `TestRail run: ${run.url}` : ""),
       project: config.xray.jiraProjectKey,
-      startDate: run.created_on
-        ? new Date(run.created_on * 1000).toISOString()
-        : new Date().toISOString(),
-      finishDate: new Date().toISOString(),
+      startDate,
+      finishDate,
     };
 
     if (dryRun) {
-      logger.dry(`Would import ${tests.length} results for run "${run.name}"`);
+      const notes = [];
+      if (config.scope.migrateResultAttachments !== false) {
+        notes.push("screenshots as Xray evidence");
+      }
+      if (config.scope.migrateResultDefects !== false) {
+        notes.push("defect keys as Xray defects on each test run");
+      }
+      const extraNote = notes.length ? ` (${notes.join("; ")})` : "";
+      logger.dry(
+        `Would create Test Execution for run "${run.name}" (${run.id}) with ${tests.length} test result(s)${extraNote}`
+      );
       continue;
     }
 
     try {
-      await importExecution(info, tests);
-      logger.success(`Imported ${tests.length} results for run "${run.name}"`);
+      const job = await importExecution(info, tests);
+      importedRuns[String(run.id)] = {
+        testRailRunId: run.id,
+        name: run.name,
+        testCount: tests.length,
+        importedAt: new Date().toISOString(),
+        jobId: job?.jobId ?? job?.id,
+      };
+      saveImportedRuns(importedRuns);
+      importedCount++;
+      const extras = [];
+      if (evidenceFileCount > 0) extras.push(`${evidenceFileCount} evidence file(s)`);
+      if (defectLinkCount > 0) extras.push(`${defectLinkCount} defect link(s)`);
+      const extraNote = extras.length ? `, ${extras.join(", ")}` : "";
+      logger.success(
+        `Imported run "${run.name}" → Test Execution (${tests.length} tests${extraNote})`
+      );
     } catch (e) {
       logger.recordError(`results(run-${run.id})`, e.message);
     }
   }
+
+  logger.info(
+    `Test executions: ${importedCount} imported, ${skippedCount} skipped (already done)`
+  );
 }
 
 function validateConfig() {

@@ -102,6 +102,19 @@ export async function getResults(runId) {
   return getPaginated(`/get_results_for_run/${runId}`, "results");
 }
 
+export async function getTestsForRun(runId) {
+  return getPaginated(`/get_tests/${runId}`, "tests");
+}
+
+export async function getAttachmentsForRun(runId) {
+  try {
+    return getPaginated(`/get_attachments_for_run/${runId}`, "attachments");
+  } catch (e) {
+    logger.recordWarning(`getAttachmentsForRun(${runId})`, e.message);
+    return [];
+  }
+}
+
 export async function getAttachmentsForCase(caseId) {
   try {
     const data = await get(`/get_attachments_for_case/${caseId}`);

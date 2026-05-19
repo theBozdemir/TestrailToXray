@@ -1,5 +1,6 @@
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
+import { collectDefectKeysFromResult } from "../importer/jira.client.js";
 import {
   hasStructuredSteps,
   parseDescription,
@@ -146,8 +147,26 @@ export function buildDescription(trCase, strategy, attachmentMap = new Map(), id
   return parts.join("\n\n");
 }
 
-export function transformResult(trResult, xrayTestKey) {
-  const { statusMap, userMap } = config;
+/** Map TestRail status_id to Xray Cloud execution status (PASSED, FAILED, TODO, …). */
+function toXrayExecutionStatus(statusId) {
+  const { executionStatusMap, statusMap } = config;
+  const aliases = {
+    PASS: "PASSED",
+    PASSED: "PASSED",
+    FAIL: "FAILED",
+    FAILED: "FAILED",
+    BLOCKED: "TODO",
+    UNTESTED: "TODO",
+    RETEST: "TODO",
+    SKIPPED: "TODO",
+  };
+
+  const name = executionStatusMap?.[statusId] ?? statusMap[statusId] ?? "TODO";
+  return aliases[name] ?? name;
+}
+
+export function transformResult(trResult, xrayTestKey, evidence = [], defectKeys = []) {
+  const { userMap } = config;
 
   const assigneeAccountId = trResult.tested_by
     ? (userMap[trResult.tested_by] ?? null)
@@ -157,13 +176,32 @@ export function transformResult(trResult, xrayTestKey) {
     ? new Date(trResult.created_on * 1000).toISOString()
     : new Date().toISOString();
 
+  const status = toXrayExecutionStatus(trResult.status_id);
+
+  const migrateDefects = config.scope.migrateResultDefects !== false;
+  const defects =
+    migrateDefects && defectKeys.length > 0
+      ? defectKeys
+      : migrateDefects
+        ? collectDefectKeysFromResult(trResult)
+        : [];
+
+  const commentParts = [];
+  if (trResult.comment?.trim()) commentParts.push(trResult.comment.trim());
+  if (defects.length === 0 && trResult.defects?.trim()) {
+    commentParts.push(`Defects (not linked — check keys exist in Jira): ${trResult.defects}`);
+  }
+  commentParts.push(`Imported from TestRail result ${trResult.id}`);
+
   const payload = {
-    testIssueKey: xrayTestKey,
+    testKey: xrayTestKey,
     start: executedOn,
     finish: executedOn,
-    status: statusMap[trResult.status_id] ?? "TODO",
-    comment: trResult.comment ?? "",
+    status,
+    comment: commentParts.join("\n\n"),
     ...(assigneeAccountId ? { executedBy: assigneeAccountId } : {}),
+    ...(evidence.length > 0 ? { evidence } : {}),
+    ...(defects.length > 0 ? { defects } : {}),
   };
 
   if (!assigneeAccountId && trResult.tested_by) {

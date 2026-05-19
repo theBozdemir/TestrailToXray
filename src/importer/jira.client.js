@@ -138,3 +138,64 @@ export function resolveRefKeys(refs) {
 
   return [...keys];
 }
+
+/**
+ * Extract Jira defect keys from TestRail result defects field (comma-separated keys or browse URLs).
+ * Unlike resolveRefKeys, does not exclude the migration project — defects are often bugs in any project.
+ * @param {string} defectsText
+ */
+export function resolveDefectKeys(defectsText) {
+  if (!defectsText?.trim()) return [];
+
+  const patternSource =
+    config.xray.defectLinkPattern ??
+    config.xray.refLinkPattern ??
+    "^[A-Z][A-Z0-9]+-\\d+$";
+  const pattern = new RegExp(patternSource, "i");
+  const keys = new Set();
+  const text = String(defectsText);
+
+  for (const m of text.matchAll(/\/browse\/([A-Z][A-Z0-9]+-\d+)/gi)) {
+    const key = m[1].toUpperCase();
+    if (pattern.test(key)) keys.add(key);
+  }
+
+  const tokens = text
+    .split(/[,;\n]+/)
+    .flatMap((t) => t.trim().split(/\s+/))
+    .filter(Boolean);
+
+  for (const tok of tokens) {
+    const matches = tok.match(/\b([A-Z][A-Z0-9]+-\d+)\b/gi) ?? [];
+    for (const match of matches) {
+      const key = match.toUpperCase();
+      if (pattern.test(key)) keys.add(key);
+    }
+  }
+
+  return [...keys];
+}
+
+/** Collect unique defect keys from a TestRail result (test-level and step-level). */
+export function collectDefectKeysFromResult(trResult) {
+  const keys = new Set();
+
+  for (const k of resolveDefectKeys(trResult.defects)) keys.add(k);
+
+  if (Array.isArray(trResult.custom_step_results)) {
+    for (const step of trResult.custom_step_results) {
+      for (const k of resolveDefectKeys(step.defects)) keys.add(k);
+    }
+  }
+
+  return [...keys];
+}
+
+export async function issueExists(issueKey) {
+  try {
+    await client.get(`/issue/${issueKey}`, { params: { fields: "key" } });
+    return true;
+  } catch {
+    return false;
+  }
+}

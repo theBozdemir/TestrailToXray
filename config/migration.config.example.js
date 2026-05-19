@@ -10,6 +10,8 @@ export const config = {
     projectId: 1,
     suiteIds: [],
     pilotCaseIds: [],
+    // Optional: only import these TestRail run IDs (empty = all runs in lookback)
+    runIds: [],
     concurrency: 3,
     retryDelay: 2000,
   },
@@ -34,6 +36,8 @@ export const config = {
 
     // Only matching refs become Linked work items (PROJECT-123, e.g. FB-1, WSC-99, SAC-100)
     refLinkPattern: "^[A-Z][A-Z0-9]+-\\d+$",
+    // Optional: pattern for defect keys (defaults to refLinkPattern)
+    // defectLinkPattern: "^[A-Z][A-Z0-9]+-\\d+$",
     // Optional: also link refs to your migration project (default: TSTSWEB keys are skipped)
     refLinkAllowProjects: [],
 
@@ -53,8 +57,17 @@ export const config = {
   scope: {
     migrateTestCases: true,
     migrateAttachments: true,
+    // Import TestRail test runs as Xray Test Executions (requires runs in TestRail)
     migrateResults: false,
     resultsLookbackDays: 180,
+    // Screenshots / proof attachments on results → Xray execution evidence
+    migrateResultAttachments: true,
+    resultEvidenceMaxFiles: 20,
+    resultEvidenceMaxTotalMb: 25,
+    // TestRail result defects (e.g. FB-123, WSC-99) → Xray defects on each test run
+    migrateResultDefects: true,
+    // Skip defect keys that do not exist in Jira (avoids import failures)
+    validateResultDefects: true,
   },
 
   parser: {
@@ -87,6 +100,15 @@ export const config = {
     5: "FAIL",
   },
 
+  // TestRail status_id → Xray execution status (PASSED, FAILED, TODO, EXECUTING, …)
+  executionStatusMap: {
+    1: "PASSED",
+    2: "TODO",
+    3: "TODO",
+    4: "TODO",
+    5: "FAILED",
+  },
+
   typeMap: {
     1: "Manual",
     2: "Automated",
@@ -107,5 +129,6 @@ export const config = {
     logsDir: "./logs",
     reportsDir: "./reports",
     idMapFile: "./reports/id-map.json",
+    importedRunsFile: "./reports/imported-runs.json",
   },
 };
