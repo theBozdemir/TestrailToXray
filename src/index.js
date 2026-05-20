@@ -35,6 +35,7 @@ import {
   getIssueAttachmentNames,
   uploadAttachment,
   updateIssueDescription,
+  clearIssueAssignee,
   linkIssues,
   resolveRefKeys,
   collectDefectKeysFromResult,
@@ -54,6 +55,11 @@ import {
   buildResultEvidence,
   groupAttachmentsByResultId,
 } from "./utils/result-evidence.js";
+import {
+  caseMatchesSectionFilterWithTree,
+  getSectionFiltersFromConfig,
+  hasSectionFilter,
+} from "./utils/section-filter.js";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -67,6 +73,15 @@ const cliCaseIds = caseIdsArg
       .split("=")[1]
       .split(",")
       .map((s) => Number(s.trim()))
+      .filter(Boolean)
+  : [];
+
+const sectionsArg = args.find((a) => a.startsWith("--sections="));
+const cliSectionNames = sectionsArg
+  ? sectionsArg
+      .split("=")[1]
+      .split(",")
+      .map((s) => s.trim())
       .filter(Boolean)
   : [];
 
@@ -96,7 +111,7 @@ function buildSectionTree(sections) {
     return full;
   }
 
-  return { pathFor };
+  return { pathFor, byId };
 }
 
 function shouldMigrateCase(caseId) {
@@ -107,8 +122,40 @@ function shouldMigrateCase(caseId) {
   return pilot.includes(caseId);
 }
 
+function shouldIncludeCase(trCase, sectionPath, suiteName, sectionById) {
+  if (cliCaseIds.length > 0) {
+    return cliCaseIds.includes(trCase.id);
+  }
+  if (config.testRail.pilotCaseIds?.length) {
+    if (!config.testRail.pilotCaseIds.includes(trCase.id)) return false;
+  }
+
+  const sectionFilters = getSectionFiltersFromConfig(config, cliSectionNames);
+  if (hasSectionFilter(sectionFilters)) {
+    return caseMatchesSectionFilterWithTree(
+      trCase,
+      sectionPath,
+      suiteName,
+      sectionFilters,
+      sectionById
+    );
+  }
+
+  return shouldMigrateCase(trCase.id);
+}
+
 async function collectCases() {
   const projectId = config.testRail.projectId;
+  const sectionFilters = getSectionFiltersFromConfig(config, cliSectionNames);
+  if (hasSectionFilter(sectionFilters)) {
+    logger.info(
+      `Section filter: names=[${sectionFilters.sectionNames.join(", ")}]` +
+        (sectionFilters.sectionIds.length
+          ? ` ids=[${sectionFilters.sectionIds.join(", ")}]`
+          : "")
+    );
+  }
+
   let suites = await getSuites(projectId);
 
   if (config.testRail.suiteIds?.length) {
@@ -120,13 +167,9 @@ async function collectCases() {
   // Single-suite or suite-less layouts: migrate all project cases under one folder
   if (suites.length === 0) {
     let cases = await getCasesForProject(projectId);
-    if (cliCaseIds.length) {
-      cases = cases.filter((c) => cliCaseIds.includes(c.id));
-    } else {
-      cases = cases.filter((c) => shouldMigrateCase(c.id));
-    }
     const suite = { name: "Test Cases" };
     for (const c of cases) {
+      if (!shouldIncludeCase(c, [], suite.name, null)) continue;
       allCases.push({ case: c, suite, folderPath: "/Test Cases" });
     }
     return allCases;
@@ -134,17 +177,12 @@ async function collectCases() {
 
   for (const suite of suites) {
     const sections = await getSections(projectId, suite.id);
-    const { pathFor } = buildSectionTree(sections);
-    let cases = await getCases(projectId, suite.id);
-
-    if (cliCaseIds.length) {
-      cases = cases.filter((c) => cliCaseIds.includes(c.id));
-    } else {
-      cases = cases.filter((c) => shouldMigrateCase(c.id));
-    }
+    const { pathFor, byId } = buildSectionTree(sections);
+    const cases = await getCases(projectId, suite.id);
 
     for (const c of cases) {
       const sectionPath = pathFor(c.section_id);
+      if (!shouldIncludeCase(c, sectionPath, suite.name, byId)) continue;
       const folderPath = buildFolderPath(suite.name, sectionPath);
       allCases.push({ case: c, suite, folderPath });
     }
@@ -386,6 +424,11 @@ async function postProcessIssue(
   caseFieldDefs = []
 ) {
   const strategy = hasStructuredSteps(trCase) ? "structured" : "heuristic";
+
+  if (config.xray.forceUnassigned !== false) {
+    await clearIssueAssignee(issueKey);
+  }
+
   const description = buildDescription(trCase, strategy, attachmentMap, idMap, caseFieldDefs);
 
   let jiraAttachments = [];
@@ -739,7 +782,10 @@ async function main() {
 
   const cases = await collectCases();
   if (cases.length === 0) {
-    logger.warn("No cases found. Set pilotCaseIds or --case-ids=1,2,3 in config/CLI.");
+    logger.warn(
+      "No cases found. Set sectionNames, pilotCaseIds, --sections=..., or --case-ids=... " +
+        "(run npm run list-sections to see subsection names)."
+    );
     return;
   }
 

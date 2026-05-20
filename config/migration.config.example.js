@@ -10,6 +10,12 @@ export const config = {
     projectId: 1,
     suiteIds: [],
     pilotCaseIds: [],
+    // Filter by TestRail subsection name (partial match, case-insensitive). Example: ["Web App Manager"]
+    sectionNames: [],
+    // Or filter by section id(s) — includes all cases in that section and child sections
+    sectionIds: [],
+    // Or full path substring: ["WSC / Web App Manager"]
+    sectionPaths: [],
     // Optional: only import these TestRail run IDs (empty = all runs in lookback)
     runIds: [],
     concurrency: 3,
@@ -24,6 +30,9 @@ export const config = {
     jiraEmail: "your@email.com",
     jiraApiToken: "YOUR_JIRA_API_TOKEN",
     testIssueType: "Test",
+
+    // Keep migrated tests unassigned (clears Jira auto-assign after create)
+    forceUnassigned: true,
 
     // Set after first successful run (or if auto-detect finds EU):
     apiBaseUrl: "https://eu.xray.cloud.getxray.app/api/v2",

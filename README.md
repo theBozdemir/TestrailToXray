@@ -21,9 +21,11 @@ cp config/migration.config.example.js config/migration.config.js
 | `testRail.baseUrl`, `username`, `apiKey` | TestRail → My Settings → API Key |
 | `testRail.projectId` | TestRail project URL or API |
 | `testRail.pilotCaseIds` | TestRail case IDs for your first sample run |
+| `testRail.sectionNames` | Subsection names to migrate (e.g. `["Web App Manager"]`) — no need to list 100+ IDs |
 | `xray.jiraBaseUrl`, `jiraProjectKey` | Your Atlassian site |
 | `xray.clientId`, `clientSecret` | Jira → Apps → Xray → Settings → API Keys |
 | `xray.jiraEmail`, `jiraApiToken` | [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `xray.forceUnassigned` | `true` = leave migrated tests unassigned (overrides Jira auto-assign) |
 
 3. **Jira priority names** — Update `priorityMap` if your Jira uses different names (`Highest`, `High`, etc.).
 
@@ -41,6 +43,12 @@ npm run migrate
 
 # Migrate specific IDs from CLI
 node src/index.js --case-ids=101,102,103
+
+# List TestRail subsections and case counts (find sectionNames for config)
+npm run list-sections
+
+# Migrate only cases under matching subsection(s)
+node src/index.js --sections="Web App Manager"
 
 # Import TestRail test runs as Xray Test Executions (needs id-map.json first)
 npm run results-only

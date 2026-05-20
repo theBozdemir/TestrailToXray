@@ -12,7 +12,8 @@
     "test-xray": "node src/test-xray.js",
     "results-only": "node src/index.js --results-only",
     "repair-descriptions": "node src/index.js --repair-descriptions",
-    "fetch-fields": "node src/fetch-testrail-fields.js"
+    "fetch-fields": "node src/fetch-testrail-fields.js",
+    "list-sections": "node src/list-sections.js"
   },
   "dependencies": {
     "axios": "^1.7.2",

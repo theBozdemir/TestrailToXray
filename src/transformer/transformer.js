@@ -80,6 +80,10 @@ export function transformCase(trCase, folderPath, dryRun = false, options = {}) 
 
   if (descriptionText) fields.description = descriptionText;
 
+  if (config.xray.forceUnassigned !== false) {
+    fields.assignee = null;
+  }
+
   if (config.xray.includePriority === true) {
     const priorityName = priorityMap[trCase.priority_id];
     if (priorityName) fields.priority = { name: priorityName };

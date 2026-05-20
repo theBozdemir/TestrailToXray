@@ -66,6 +66,19 @@ export async function uploadAttachment(issueKey, filename, buffer, contentType) 
   });
 }
 
+/** Remove assignee (overrides Jira project auto-assign on create). */
+export async function clearIssueAssignee(issueKey) {
+  try {
+    await client.put(`/issue/${issueKey}`, {
+      fields: { assignee: null },
+    });
+    logger.info(`Cleared assignee on ${issueKey}`);
+  } catch (e) {
+    const msg = e.response?.data?.errorMessages?.join?.(" ") ?? e.message;
+    logger.recordWarning(`jira.unassign(${issueKey})`, msg);
+  }
+}
+
 export async function updateIssueDescription(issueKey, description, attachments = []) {
   const filenameToId = Object.fromEntries(
     attachments.map((a) => [a.filename, a.id])
