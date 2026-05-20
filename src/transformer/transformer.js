@@ -1,3 +1,6 @@
+/**
+ * Transform TestRail cases/results into Xray bulk-import JSON payloads.
+ */
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
 import { collectDefectKeysFromResult } from "../importer/jira.client.js";
@@ -19,6 +22,7 @@ import {
 } from "../utils/testrail-custom-fields.js";
 
 /** Avoid wiki image syntax in Xray steps (causes broken loaders); post-process sets HTML images. */
+/** Strip wiki images from step expected text for Xray import (images added in post-process). */
 function formatStepResultForImport(expected, attachmentMap) {
   const processed = replaceTestRailAttachmentRefs(expected, attachmentMap);
   if (!processed) return "";
@@ -135,6 +139,7 @@ export function transformCase(trCase, folderPath, dryRun = false, options = {}) 
   };
 }
 
+/** Assemble Jira wiki description: TC description, custom fields, preconds, refs, footer. */
 export function buildDescription(
   trCase,
   strategy,
@@ -173,6 +178,7 @@ export function buildDescription(
 }
 
 /** Map TestRail status_id to Xray Cloud execution status (PASSED, FAILED, TODO, …). */
+/** Map TestRail result status_id to Xray execution status string. */
 function toXrayExecutionStatus(statusId) {
   const { executionStatusMap, statusMap } = config;
   const aliases = {
@@ -190,6 +196,7 @@ function toXrayExecutionStatus(statusId) {
   return aliases[name] ?? name;
 }
 
+/** Build one test entry for /import/execution: status, comment, evidence, defects. */
 export function transformResult(
   trResult,
   xrayTestKey,
@@ -247,11 +254,13 @@ export function transformResult(
   return payload;
 }
 
+/** Test Repository-style path string (informational; not sent to Xray import). */
 export function buildFolderPath(suiteName, sectionPath = []) {
   const parts = [suiteName, ...sectionPath].map(sanitizeFolderName);
   return "/" + parts.join("/");
 }
 
+/** Remove characters invalid in folder paths. */
 function sanitizeFolderName(name) {
   return String(name).replace(/[/\\|<>:?"*]/g, "_").trim();
 }

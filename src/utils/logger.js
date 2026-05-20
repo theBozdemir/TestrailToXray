@@ -1,3 +1,6 @@
+/**
+ * Console + file logging; tracks migrated, errors, warnings, manual review queue.
+ */
 import fs from "fs";
 import path from "path";
 import { config } from "../../config/migration.config.js";

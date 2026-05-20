@@ -1,3 +1,6 @@
+/**
+ * Convert migration wiki description to Atlassian Document Format for Jira Cloud.
+ */
 import { config } from "../../config/migration.config.js";
 
 function attachmentContentUrl(attachmentId) {
@@ -11,6 +14,7 @@ function attachmentContentUrl(attachmentId) {
  * @param {string} text
  * @param {Record<string, string>} filenameToAttachmentId  uploaded filename → Jira attachment id
  */
+/** Convert wiki description to ADF; embed images via Jira attachment content URLs. */
 export function descriptionToAdf(text, filenameToAttachmentId = {}) {
   if (!text || !String(text).trim()) return undefined;
 

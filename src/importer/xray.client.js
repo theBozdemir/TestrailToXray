@@ -1,3 +1,6 @@
+/**
+ * Xray Cloud REST: auth, regional endpoint, bulk test import, execution import, job polling.
+ */
 import axios from "axios";
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
@@ -110,6 +113,7 @@ async function authenticateAtBase(base) {
   return normalizeToken(res.data);
 }
 
+/** Detect EU/US/AU/Global Xray API base from authenticate probe. */
 export async function resolveXrayRegion() {
   if (config.xray.apiBaseUrl) {
     xrayBase = config.xray.apiBaseUrl;
@@ -222,6 +226,7 @@ export async function getImportJobStatus(jobId, kind = "test") {
   return xrayRequest("get", statusPath);
 }
 
+/** POST /import/test/bulk and poll until job completes; returns job status. */
 export async function importTestsBulk(tests) {
   logger.info(`Submitting ${tests.length} test(s) to Xray (async job)…`);
   const res = await xrayRequest("post", "/import/test/bulk", tests);
@@ -271,6 +276,7 @@ async function pollImportJob(jobId, kind, maxAttempts, intervalMs) {
   throw err;
 }
 
+/** Map TestRail case ids to Jira keys from completed bulk import job response. */
 export function extractKeysFromJob(jobStatus, testRailIds) {
   const map = {};
   const issues =
@@ -297,6 +303,7 @@ export function extractKeysFromJob(jobStatus, testRailIds) {
   return map;
 }
 
+/** POST /import/execution for Test Execution + per-test results. */
 export async function importExecution(info, tests) {
   const res = await xrayRequest("post", "/import/execution", { info, tests });
   const jobId = typeof res === "string" ? res : (res.jobId ?? res.id ?? res);

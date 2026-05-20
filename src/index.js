@@ -1,4 +1,17 @@
 #!/usr/bin/env node
+/**
+ * Main orchestrator: TestRail → Xray (Jira Cloud) migration.
+ *
+ * CLI flags:
+ *   --dry-run              Preview without writing to Jira/Xray
+ *   --audit-only           Classify structured vs unstructured cases only
+ *   --results-only         Import test runs as Test Executions (uses id-map.json)
+ *   --repair-descriptions  Re-apply descriptions/custom fields on mapped issues
+ *   --reimport             Ignore id-map skip and import again
+ *   --case-ids=1,2,3       Limit to specific TestRail case ids
+ *   --sections=Name,Name   Filter by subsection name(s)
+ *   --skip-xray-check      Skip Xray region/auth probe at startup
+ */
 import fs from "fs";
 import path from "path";
 import pLimit from "p-limit";
@@ -85,6 +98,7 @@ const cliSectionNames = sectionsArg
       .filter(Boolean)
   : [];
 
+/** Load TestRail case id → Jira key map from reports/id-map.json (or empty object). */
 function loadExistingIdMap() {
   try {
     if (fs.existsSync(config.output.idMapFile)) {
@@ -96,6 +110,7 @@ function loadExistingIdMap() {
   return {};
 }
 
+/** Build parent chain for each TestRail section id → array of section names. */
 function buildSectionTree(sections) {
   const byId = new Map(sections.map((s) => [s.id, s]));
   const pathCache = new Map();
@@ -114,6 +129,7 @@ function buildSectionTree(sections) {
   return { pathFor, byId };
 }
 
+/** True if case id is in pilotCaseIds or --case-ids (when those lists are non-empty). */
 function shouldMigrateCase(caseId) {
   const pilot = config.testRail.pilotCaseIds?.length
     ? config.testRail.pilotCaseIds
@@ -122,6 +138,7 @@ function shouldMigrateCase(caseId) {
   return pilot.includes(caseId);
 }
 
+/** Apply CLI/config filters: case ids, pilot list, then section name/id/path filter. */
 function shouldIncludeCase(trCase, sectionPath, suiteName, sectionById) {
   if (cliCaseIds.length > 0) {
     return cliCaseIds.includes(trCase.id);
@@ -144,6 +161,7 @@ function shouldIncludeCase(trCase, sectionPath, suiteName, sectionById) {
   return shouldMigrateCase(trCase.id);
 }
 
+/** Fetch all cases from TestRail for configured project/suites, applying section filters. */
 async function collectCases() {
   const projectId = config.testRail.projectId;
   const sectionFilters = getSectionFiltersFromConfig(config, cliSectionNames);
@@ -203,6 +221,7 @@ async function collectCases() {
   return allCases;
 }
 
+/** Count structured vs unstructured cases for the HTML/JSON report (no API writes). */
 async function runAudit(cases) {
   let structured = 0;
   let unstructured = 0;
@@ -225,6 +244,7 @@ async function runAudit(cases) {
   return audit;
 }
 
+/** After Xray timeout, find created tests in Jira by label testrail-case-{id}. */
 async function recoverFromJira(metaList, idMap) {
   let recovered = 0;
   for (const m of metaList) {
@@ -240,6 +260,7 @@ async function recoverFromJira(metaList, idMap) {
   return recovered;
 }
 
+/** Submit one Xray bulk import job and map returned Jira keys into idMap. */
 async function importBatch(imports, metaList, idMap) {
   const trIds = metaList.map((m) => m.testRailId);
   let job;
@@ -279,16 +300,19 @@ async function importBatch(imports, metaList, idMap) {
   }
 }
 
+/** Fetch TestRail get_case_fields when includeAllCustomFields is enabled. */
 async function loadCaseFieldDefs() {
   if (config.scope.includeAllCustomFields === false) return [];
   return getCaseFields();
 }
 
+/** Fetch TestRail get_result_fields for execution import comments. */
 async function loadResultFieldDefs() {
   if (config.scope.includeAllCustomFields === false) return [];
   return getResultFields();
 }
 
+/** Import cases to Xray, then upload attachments and post-process descriptions/steps. */
 async function migrateCases(cases) {
   const idMap = loadExistingIdMap();
   const caseFieldDefs = await loadCaseFieldDefs();
@@ -362,6 +386,7 @@ async function migrateCases(cases) {
   return idMap;
 }
 
+/** Upload TestRail files to Jira and run description/step/reference post-processing. */
 async function migrateAttachments(cases, idMap, caseFieldDefs = []) {
   const limit = pLimit(config.testRail.concurrency ?? 3);
 
@@ -415,6 +440,7 @@ async function migrateAttachments(cases, idMap, caseFieldDefs = []) {
   );
 }
 
+/** Update description (ADF), clear assignee, link refs, refresh Xray step images. */
 async function postProcessIssue(
   trCase,
   issueKey,
@@ -451,6 +477,7 @@ async function postProcessIssue(
   }
 }
 
+/** Attach images to Xray manual test steps and set expected-result label text. */
 async function postProcessTestSteps(trCase, issueKey, attachmentMap, testrailAttachments) {
   try {
     const trSteps = extractTestRailSteps(trCase, attachmentMap);
@@ -518,6 +545,7 @@ async function postProcessTestSteps(trCase, issueKey, attachmentMap, testrailAtt
   }
 }
 
+/** Load map of TestRail run ids already imported as Test Executions. */
 function loadImportedRuns() {
   const file = config.output.importedRunsFile ?? "./reports/imported-runs.json";
   try {
@@ -528,12 +556,14 @@ function loadImportedRuns() {
   return {};
 }
 
+/** Persist imported-runs.json after a successful execution import. */
 function saveImportedRuns(importedRuns) {
   const file = config.output.importedRunsFile ?? "./reports/imported-runs.json";
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(importedRuns, null, 2));
 }
 
+/** Import TestRail test runs as Xray Test Executions with evidence and defects. */
 async function migrateResults(idMap) {
   const resultFieldDefs = await loadResultFieldDefs();
   if (resultFieldDefs.length > 0) {
@@ -702,6 +732,7 @@ async function migrateResults(idMap) {
   );
 }
 
+/** Re-run postProcessIssue for already-mapped cases (no re-import). */
 async function repairDescriptionsForCases(idMap, caseIds) {
   const caseFieldDefs = await loadCaseFieldDefs();
   const limit = pLimit(config.testRail.concurrency ?? 3);
@@ -737,6 +768,7 @@ async function repairDescriptionsForCases(idMap, caseIds) {
   );
 }
 
+/** Fail fast if placeholder credentials are still in config. */
 function validateConfig() {
   const missing = [];
   if (config.testRail.baseUrl.includes("YOUR_COMPANY")) missing.push("testRail.baseUrl");
@@ -750,6 +782,7 @@ function validateConfig() {
   }
 }
 
+/** Entry point: validate config, route to migrate / audit / results / repair mode. */
 async function main() {
   logger.info("TestRail → Xray migration starting…");
   validateConfig();

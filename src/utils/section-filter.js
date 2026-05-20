@@ -1,5 +1,5 @@
 /**
- * Filter TestRail cases by suite section name or id.
+ * Filter TestRail cases by suite section name, id, or path substring.
  */
 
 function normalize(s) {

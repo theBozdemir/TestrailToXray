@@ -1,3 +1,6 @@
+/**
+ * Format TestRail custom field values using get_case_fields / get_result_fields API metadata.
+ */
 import { jiraBold, replaceTestRailAttachmentRefs, stripHtml } from "./jira-content.js";
 
 /** Handled elsewhere — do not duplicate in the generic custom-fields block. */

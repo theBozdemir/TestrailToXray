@@ -1,8 +1,12 @@
+/**
+ * Write JSON/HTML migration report and persist id-map.json after successful runs.
+ */
 import fs from "fs";
 import path from "path";
 import { config } from "../../config/migration.config.js";
 import { logger } from "./logger.js";
 
+/** Emit report files and print summary; updates id-map unless dry-run. */
 export function writeReport(idMap, dryRun = false, audit = null) {
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const reportPath = path.join(config.output.reportsDir, `report-${runId}.json`);

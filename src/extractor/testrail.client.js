@@ -1,3 +1,6 @@
+/**
+ * TestRail REST API v2 client (read-only): cases, sections, runs, results, attachments, field defs.
+ */
 import axios from "axios";
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
@@ -34,21 +37,25 @@ client.interceptors.response.use(null, async (err) => {
   return Promise.reject(err);
 });
 
+/** Pause between paginated requests. */
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** GET one endpoint; returns parsed JSON body. */
 async function get(endpoint) {
   const res = await client.get(endpoint);
   return res.data;
 }
 
+/** Normalize TestRail response to array (bare array or { cases: [...] } style). */
 function extractList(data, arrayKey) {
   if (Array.isArray(data)) return data;
   if (data && Array.isArray(data[arrayKey])) return data[arrayKey];
   return [];
 }
 
+/** Page through TestRail list endpoints with limit/offset. */
 async function getPaginated(endpoint, arrayKey, limit = 250) {
   const results = [];
   let offset = 0;

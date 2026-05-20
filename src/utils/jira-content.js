@@ -1,6 +1,10 @@
+/**
+ * Jira wiki text, TestRail attachment refs, description sections, reference formatting.
+ */
 import { config } from "../../config/migration.config.js";
 
 /** Jira wiki markup (works in plain-text description on many Cloud projects). */
+/** Jira wiki bold: *text* */
 export function jiraBold(text) {
   return `*${text}*`;
 }
@@ -78,6 +82,7 @@ function embedForAttachmentId(id, map) {
  * TestRail embeds use cassandra_file_id in URLs; API list uses numeric id.
  * @param {Array<{ id: string|number, name?: string, filename?: string, cassandra_file_id?: string, data_id?: number }>} attachments
  */
+/** Map TestRail attachment id / UUID → unique upload filename on Jira issue. */
 export function buildAttachmentIdMap(attachments = []) {
   const map = new Map();
   for (const att of attachments) {

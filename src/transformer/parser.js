@@ -1,3 +1,6 @@
+/**
+ * Parse unstructured TestRail text into steps; read structured custom_steps fields.
+ */
 import { replaceTestRailAttachmentRefs } from "../utils/jira-content.js";
 
 /**
@@ -5,6 +8,7 @@ import { replaceTestRailAttachmentRefs } from "../utils/jira-content.js";
  * @typedef {{ steps: Step[], confidence: number, strategy: string }} ParseResult
  */
 
+/** Heuristic parse of free-text into { steps, confidence, strategy }. */
 export function parseDescription(description) {
   if (!description || description.trim().length === 0) {
     return { steps: [], confidence: 0, strategy: "empty" };
@@ -149,6 +153,7 @@ function pairWithExpectedLines(steps, allLines, stepPattern) {
 /**
  * TestRail often stores actions in custom_steps and expected results in custom_expected.
  */
+/** Read steps from custom_steps_separated or custom_steps + custom_expected. */
 export function extractTestRailSteps(testCase, attachmentIdToFilename = new Map()) {
   let separated = testCase.custom_steps_separated;
 
@@ -219,6 +224,7 @@ export function getRawStepExpecteds(testCase) {
   return raw;
 }
 
+/** True if case uses TestRail structured steps (not description-only). */
 export function hasStructuredSteps(testCase) {
   const separated = testCase.custom_steps_separated;
 
@@ -286,6 +292,7 @@ function stripHtml(text) {
     .trim();
 }
 
+/** Concatenate configured custom fields for heuristic parsing / description fallback. */
 export function getUnstructuredText(testCase, fieldNames = []) {
   const parts = [];
   for (const field of fieldNames) {

@@ -1,3 +1,6 @@
+/**
+ * Xray GraphQL: read manual test steps and update expected result + step attachments.
+ */
 import axios from "axios";
 import { config } from "../../config/migration.config.js";
 import { logger } from "../utils/logger.js";
@@ -7,6 +10,7 @@ function graphqlBase() {
   return config.xray.apiBaseUrl.replace(/\/api\/v2\/?$/, "");
 }
 
+/** Run authenticated Xray Cloud GraphQL request. */
 async function graphqlRequest(query, variables) {
   const token = await authenticateXray();
   const res = await axios.post(

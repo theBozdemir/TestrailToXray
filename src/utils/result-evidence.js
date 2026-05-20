@@ -1,3 +1,6 @@
+/**
+ * Build Xray execution evidence[] from TestRail result attachments and embedded images.
+ */
 import { logger } from "./logger.js";
 import {
   buildAttachmentIdMap,

@@ -1,3 +1,6 @@
+/**
+ * Jira Cloud REST API: search, attachments, description (ADF), issue links, assignee.
+ */
 import axios from "axios";
 import FormData from "form-data";
 import { config } from "../../config/migration.config.js";
@@ -13,6 +16,7 @@ const client = axios.create({
   timeout: 30_000,
 });
 
+/** Find migrated test by label testrail-case-{id}; returns Jira key or null. */
 export async function findExistingTestByLabel(testRailCaseId) {
   const label = `testrail-case-${testRailCaseId}`;
   const jql = `project = ${config.xray.jiraProjectKey} AND labels = "${label}"`;
@@ -38,6 +42,7 @@ export async function findExistingTestByLabel(testRailCaseId) {
   }
 }
 
+/** List attachment id and filename on a Jira issue. */
 export async function getIssueAttachments(issueKey) {
   const res = await client.get(`/issue/${issueKey}`, {
     params: { fields: "attachment" },
@@ -53,6 +58,7 @@ export async function getIssueAttachmentNames(issueKey) {
   return attachments.map((a) => a.filename);
 }
 
+/** Upload binary to Jira issue attachments. */
 export async function uploadAttachment(issueKey, filename, buffer, contentType) {
   const form = new FormData();
   form.append("file", buffer, { filename, contentType });
@@ -79,6 +85,7 @@ export async function clearIssueAssignee(issueKey) {
   }
 }
 
+/** Replace issue description with ADF built from wiki text and attachment embeds. */
 export async function updateIssueDescription(issueKey, description, attachments = []) {
   const filenameToId = Object.fromEntries(
     attachments.map((a) => [a.filename, a.id])
@@ -211,6 +218,7 @@ export function collectDefectKeysFromResult(trResult) {
   return [...keys];
 }
 
+/** True if Jira issue key resolves (used before adding defects to execution import). */
 export async function issueExists(issueKey) {
   try {
     await client.get(`/issue/${issueKey}`, { params: { fields: "key" } });
